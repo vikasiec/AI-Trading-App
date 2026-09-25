@@ -115,6 +115,60 @@ def test_failed_exit_order_keeps_position_open(tmp_path, mocker):
     notifier.send_critical_alert.assert_called_once()
 
 
+def test_gtt_cancelled_on_live_exit(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position(decision_id="2885_1", gtt_id="GTT999"))
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2420.0  # hits stop loss
+    audit = mocker.Mock()
+    cancel_mock = mocker.patch("jev_indstocks_trader.exits.gtt_orders.cancel_gtt")
+
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=False,
+        indstocks_cfg=object(), auth_headers_fn=lambda: {},
+    )
+    manager.check_and_exit_all()
+
+    cancel_mock.assert_called_once()
+    assert cancel_mock.call_args.args[-1] == "GTT999"
+
+
+def test_no_gtt_cancel_when_position_has_no_gtt_id(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position())  # no gtt_id -- defaults to None
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2420.0
+    audit = mocker.Mock()
+    cancel_mock = mocker.patch("jev_indstocks_trader.exits.gtt_orders.cancel_gtt")
+
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=False,
+        indstocks_cfg=object(), auth_headers_fn=lambda: {},
+    )
+    manager.check_and_exit_all()
+
+    cancel_mock.assert_not_called()
+
+
+def test_no_gtt_cancel_in_paper_mode(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position(decision_id="2885_1", gtt_id="GTT999"))
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2500.0  # hits target
+    audit = mocker.Mock()
+    cancel_mock = mocker.patch("jev_indstocks_trader.exits.gtt_orders.cancel_gtt")
+
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=True,
+    )
+    manager.check_and_exit_all()
+
+    cancel_mock.assert_not_called()  # paper mode never touches real GTT orders
+
+
 # -- PositionStore persistence --------------------------------------------------
 
 def test_position_store_persists_across_instances(tmp_path):

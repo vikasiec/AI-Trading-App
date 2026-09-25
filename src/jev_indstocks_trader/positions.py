@@ -18,6 +18,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Optional
 
 
 @dataclass
@@ -33,6 +34,7 @@ class Position:
     target_price: float
     opened_at: float          # epoch seconds
     decision_id: str          # links back to the audit trail entry that opened this
+    gtt_id: Optional[str] = None  # set when GTT_ENABLED -- the exchange-side OCO order protecting this position
 
 
 class PositionStore:

@@ -28,6 +28,7 @@ from .costs import CostRates
 from .execution_gateway import ExecutionGateway
 from .exits import ExitManager
 from .feature_prep import MarketSnapshot, build_context
+from . import gtt_orders
 from .instruments import InstrumentsMaster
 from .jev_client import JevEvaluator
 from .market_data import INDstocksWebSocketFeed, LiveTickCache
@@ -66,6 +67,8 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
         notifier=notifier,
         paper_trading=cfg.risk.paper_trading,
         cost_rates=CostRates(brokerage_per_order=cfg.risk.brokerage_per_order_inr),
+        indstocks_cfg=cfg.indstocks,
+        auth_headers_fn=auth_headers_fn,
     )
     reconciler = ReconciliationService(gateway, position_store, interval_s=60.0, notifier=notifier)
 
@@ -206,6 +209,25 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
         )
 
         if approved and qty > 0:
+            stop_loss_price = ltp * (1 - cfg.risk.stop_loss_pct)
+            target_price = ltp * (1 + cfg.risk.target_pct)
+
+            gtt_id = None
+            if cfg.risk.gtt_enabled and not cfg.risk.paper_trading:
+                try:
+                    gtt_id = gtt_orders.place_gtt_oco(
+                        cfg.indstocks, gateway.auth_headers_fn,
+                        security_id=security_id, exchange=instrument.get("exchange", "NSE"),
+                        segment=instrument.get("segment", "EQUITY"), qty=qty,
+                        stop_loss_trigger=stop_loss_price, target_trigger=target_price,
+                        product="INTRADAY",
+                    )
+                except Exception:
+                    logger.exception(
+                        "GTT placement failed for %s -- position is still protected by the "
+                        "client-side exit logic, just without the exchange-side backup", symbol,
+                    )
+
             position_store.add(Position(
                 security_id=security_id,
                 scrip_code=scrip_code,
@@ -214,10 +236,11 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                 product="INTRADAY",
                 qty=qty,
                 entry_price=ltp,
-                stop_loss_price=ltp * (1 - cfg.risk.stop_loss_pct),
-                target_price=ltp * (1 + cfg.risk.target_pct),
+                stop_loss_price=stop_loss_price,
+                target_price=target_price,
                 opened_at=time.time(),
                 decision_id=decision_id,
+                gtt_id=gtt_id,
             ))
 
         if not approved:

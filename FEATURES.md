@@ -162,6 +162,20 @@ Cancels every open order **and** squares off every open position — not just
 one or the other. Triggered by the daily drawdown breach, or manually via
 Telegram.
 
+**GTT / exchange-side bracket orders (`gtt_orders.py`, gated off by default)**
+`exits.py`'s stop-loss/target logic only protects a position while this
+process is running — if it crashes, the position sits unprotected until
+someone notices. When `GTT_ENABLED=true`, every new position also gets an
+exchange-side OCO GTT order (stop-loss + target, whichever triggers first
+cancels the other) placed directly on the exchange, so it stays protected
+even if the bot goes down. `exits.py` remains the *primary* exit path — it's
+tested against real, confirmed order-placement code — and whenever it closes
+a position normally, it cancels the matching GTT first, so the exchange-side
+leg can't fire later against a position that's already flat. *Caveat:*
+INDstocks' real Smart Orders/GTT API contract wasn't reachable while
+building this, so the endpoint and payload are a best-effort placeholder —
+hence gated off by default, same treatment as the WebSocket feed.
+
 ### 5. Staying in sync and staying safe
 
 **Order/position reconciliation (`reconciliation.py`)**
@@ -299,7 +313,7 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 - [x] **Exit logic** — stop-loss, target, time-based *(v2)*
 - [ ] Confirm Instruments Master CSV schema — still open, see Open Items above
 
-### P1 — before real capital
+### P1 — before real capital — all done
 
 - [x] Statutory cost engine (`costs.py`) — net P&L now logged alongside gross on every exit *(v4)*
 - [x] Portfolio-level risk (`portfolio_risk.py`) — max concurrent positions + max deployed capital *(v4)*
@@ -307,7 +321,7 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 - [x] Reconnect/backoff for the market-data feed and for LTP/Jev reads *(v3)*
 - [x] Scheduled job to score `audit_trail.jsonl` outcomes against logged Jev conviction, validating the 0.80 threshold instead of assuming it -- `calibration.py` built and tested; still needs real trading volume to produce a meaningful result *(v5)*
 - [x] Backtesting harness against historical data, isolated from the live/paper code path -- `backtest.py`, reuses the same exit/cost logic as live trading *(v6)*
-- [ ] GTT / bracket orders — exchange-side stop-loss + target placed atomically with entry (client-side stops in `exits.py` die if the process crashes; this is the remaining gap that closes)
+- [x] GTT / bracket orders (`gtt_orders.py`) — exchange-side backup to the client-side stop-loss/target in `exits.py`; gated off by default since the endpoint contract is unconfirmed, same as the WebSocket feed *(v7)*
 
 ### P2 — production hardening
 
@@ -321,6 +335,27 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 ---
 
 ## Changelog
+
+### 2026-09-25 (v7)
+- **`gtt_orders.py`**: exchange-side OCO GTT bracket orders (stop-loss +
+  target, whichever fires first cancels the other), placed alongside every
+  new position when `GTT_ENABLED=true` (default false). `exits.py` remains
+  the primary, tested exit path; GTT is a redundant safety net for the gap
+  between "the process crashed" and "someone notices," and gets cancelled
+  automatically whenever `exits.py` closes a position through its normal
+  path, so the exchange-side leg can't fire later against a flat position.
+  Endpoint/payload are a best-effort placeholder -- INDstocks' real Smart
+  Orders API contract wasn't reachable while building this -- so it's gated
+  off by default, same treatment as the WebSocket feed.
+- `positions.py`: `Position` gained an optional `gtt_id` field.
+- 7 new tests (GTT placement payload shape, cancellation on live exit,
+  no-cancel when no GTT exists, no-cancel in paper mode, cancel-never-raises
+  contract). Full suite: 79/79 passing.
+- **All of P1 is now done** -- cost engine, portfolio risk, reconciliation,
+  reconnect/backoff, calibration, backtesting, and GTT. See P2 in the
+  roadmap for what's next on the infrastructure side, and
+  `docs/INTELLIGENCE_ROADMAP.md` for what's next on the intelligence side
+  (H4/H5 momentum/mean-reversion testing on real historical data).
 
 ### 2026-09-25 (v6)
 - **H3 news comparison**: `audit.py` now records `had_news` on every

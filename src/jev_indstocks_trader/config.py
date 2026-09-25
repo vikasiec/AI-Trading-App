@@ -73,6 +73,10 @@ class RiskConfig:
     # Portfolio-level risk -- caps across ALL open positions at once, not just one order.
     max_concurrent_positions: int = field(default_factory=lambda: int(_optional("MAX_CONCURRENT_POSITIONS", "3")))
     max_deployed_capital_pct: float = field(default_factory=lambda: float(_optional("MAX_DEPLOYED_CAPITAL_PCT", "0.10")))
+    # GTT -- exchange-side backup stop-loss/target, on top of the client-side
+    # exits.py logic. Off by default: see gtt_orders.py's "confirm before
+    # enabling" note.
+    gtt_enabled: bool = field(default_factory=lambda: _optional("GTT_ENABLED", "false").lower() == "true")
 
 
 @dataclass(frozen=True)

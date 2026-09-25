@@ -20,6 +20,7 @@ from typing import Optional
 from .audit import AuditTrail
 from .costs import CostRates, compute_round_trip_cost
 from .execution_gateway import ExecutionGateway
+from . import gtt_orders
 from .positions import Position, PositionStore
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,8 @@ class ExitManager:
         notifier=None,  # TelegramAlertNotifier, optional -- kept loosely typed to avoid a hard import cycle
         paper_trading: bool = True,
         cost_rates: CostRates = CostRates(),
+        indstocks_cfg=None,   # INDstocksConfig, needed only if any position carries a gtt_id
+        auth_headers_fn=None,
     ):
         self.gateway = gateway
         self.store = store
@@ -59,6 +62,8 @@ class ExitManager:
         self.notifier = notifier
         self.paper_trading = paper_trading
         self.cost_rates = cost_rates
+        self.indstocks_cfg = indstocks_cfg
+        self.auth_headers_fn = auth_headers_fn
 
     def check_and_exit_all(self) -> None:
         for position in self.store.list_open():
@@ -111,6 +116,10 @@ class ExitManager:
             product=position.product, rates=self.cost_rates,
         )
         net = realized_pnl - cost.total
+
+        if position.gtt_id is not None and self.indstocks_cfg is not None and not self.paper_trading:
+            gtt_orders.cancel_gtt(self.indstocks_cfg, self.auth_headers_fn, position.gtt_id)
+
         self.audit.update_outcome(
             position.decision_id, fill_price=live_ltp, realized_pnl=realized_pnl,
             net_pnl=net, costs={
