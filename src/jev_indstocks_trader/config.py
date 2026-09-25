@@ -63,6 +63,11 @@ class RiskConfig:
     # its own floor even if the Jev client's threshold check is bypassed.
     min_conviction: float = field(default_factory=lambda: float(_optional("JEV_CONVICTION_THRESHOLD", "0.80")))
     min_confidence: float = field(default_factory=lambda: float(_optional("JEV_CONFIDENCE_THRESHOLD", "0.60")))
+    # Exit rules -- every position opened by this bot is closed by one of these,
+    # never held indefinitely.
+    stop_loss_pct: float = field(default_factory=lambda: float(_optional("STOP_LOSS_PCT", "0.01")))
+    target_pct: float = field(default_factory=lambda: float(_optional("TARGET_PCT", "0.02")))
+    max_hold_minutes: float = field(default_factory=lambda: float(_optional("MAX_HOLD_MINUTES", "375")))  # ~one NSE trading day
 
 
 @dataclass(frozen=True)
@@ -72,6 +77,9 @@ class AppConfig:
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     audit_log_path: Path = field(default_factory=lambda: Path(_optional("AUDIT_LOG_PATH", "./audit_trail.jsonl")))
+    positions_store_path: Path = field(
+        default_factory=lambda: Path(_optional("POSITIONS_STORE_PATH", str(Path.home() / ".indstocks" / "open_positions.json")))
+    )
 
 
 def load_config() -> AppConfig:

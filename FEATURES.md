@@ -22,6 +22,7 @@ Checklist before anything here touches live capital.
 | Risk governor: kill switch | `risk_governor.py` | Cancels open orders **and** squares off open positions |
 | Tick-size rounding | `risk_governor.py::round_to_tick` | Decimal-based, avoids float rounding errors |
 | Order placement | `execution_gateway.py` | Matches INDstocks' real `/order` payload (`security_id`, `algo_id`, `segment`, `validity`) |
+| Exit logic (stop-loss, target, time-based) | `exits.py`, `positions.py` | Every position this bot opens is tracked with exit rules and force-closed by one of the three; checked every tick before new entries |
 | Telegram alerts + kill switch | `telegram_alerts.py` | `/halt` and `/flatten` restricted to `TELEGRAM_OWNER_CHAT_ID`; other senders silently ignored |
 | Audit trail | `audit.py` | Append-only JSONL, one line per decision, `update_outcome()` for closing the Jev-calibration loop |
 | Main trading loop | `main.py` | Wires all of the above; `PAPER_TRADING=true` by default |
@@ -62,7 +63,7 @@ before real capital; P2 is production hardening once P0/P1 are done.
 - [ ] News/filing ingestion for `feature_prep.py` -- `headlines` is currently always empty, so Jev only ever sees price data
 - [ ] Confirm Jev's real endpoint + response schema (`jev_client.py` is a placeholder)
 - [ ] Confirm Instruments Master CSV schema (`instruments.py` is a best guess)
-- [ ] **Exit logic** -- stop-loss, target, and time-based exits. Nothing in the current codebase closes a position; it only knows how to enter.
+- [x] **Exit logic** -- stop-loss, target, and time-based exits. Positions this bot opens are tracked in `positions.py` and closed by `exits.py` every tick, before new entries are considered. *(done 2026-09-25)*
 
 ### P1 — before real capital
 
@@ -86,6 +87,13 @@ before real capital; P2 is production hardening once P0/P1 are done.
 ---
 
 ## Changelog
+
+### 2026-09-25 (v2)
+- Added exit logic: `positions.py` (persisted open-position store with stop-loss/target/max-hold metadata, survives restarts) and `exits.py` (`ExitManager`, checked every tick before new entries).
+- Exits are LIMIT orders at current LTP, consistent with the no-MARKET-orders price collar policy -- the kill switch's `flatten_all()` remains the one deliberate exception, since its job is guaranteed exit, not price control.
+- `main.py` now: skips scoring a symbol it's already holding, opens a tracked position on every filled entry, and runs `ExitManager.check_and_exit_all()` at the top of every loop tick.
+- New config: `STOP_LOSS_PCT`, `TARGET_PCT`, `MAX_HOLD_MINUTES`, `POSITIONS_STORE_PATH`.
+- 10 new tests covering stop-loss/target/time-exit branch logic, paper vs. live order behavior, failed-exit-order retry safety, and position-store persistence across restarts. Full suite: 21/21 passing.
 
 ### 2026-09-25
 - Initial scaffold pushed: three-tier architecture (Jev scoring → risk governor → INDstocks execution), auth, risk governor, execution gateway, Telegram alerts, audit trail, main loop, test suite, CI.
