@@ -73,6 +73,7 @@ class RiskConfig:
     # Portfolio-level risk -- caps across ALL open positions at once, not just one order.
     max_concurrent_positions: int = field(default_factory=lambda: int(_optional("MAX_CONCURRENT_POSITIONS", "3")))
     max_deployed_capital_pct: float = field(default_factory=lambda: float(_optional("MAX_DEPLOYED_CAPITAL_PCT", "0.10")))
+    max_sector_capital_pct: float = field(default_factory=lambda: float(_optional("MAX_SECTOR_CAPITAL_PCT", "0.06")))
     # GTT -- exchange-side backup stop-loss/target, on top of the client-side
     # exits.py logic. Off by default: see gtt_orders.py's "confirm before
     # enabling" note.
@@ -97,5 +98,44 @@ class AppConfig:
     websocket_url: str = field(default_factory=lambda: _optional("INDSTOCKS_WEBSOCKET_URL", "wss://api.indstocks.com/market/stream"))
 
 
-def load_config() -> AppConfig:
-    return AppConfig()
+def validate_config(cfg: AppConfig) -> list[str]:
+    """Return human-readable problems. Empty list means safe to start the loop."""
+    problems: list[str] = []
+    r = cfg.risk
+    if not (0 < r.daily_loss_limit_pct < 1):
+        problems.append(f"DAILY_LOSS_LIMIT_PCT={r.daily_loss_limit_pct} must be in (0, 1)")
+    if not (0 < r.max_position_pct_equity <= 1):
+        problems.append(f"MAX_POSITION_PCT_EQUITY={r.max_position_pct_equity} must be in (0, 1]")
+    if not (0 < r.max_deployed_capital_pct <= 1):
+        problems.append(f"MAX_DEPLOYED_CAPITAL_PCT={r.max_deployed_capital_pct} must be in (0, 1]")
+    if not (0 < r.max_sector_capital_pct <= 1):
+        problems.append(f"MAX_SECTOR_CAPITAL_PCT={r.max_sector_capital_pct} must be in (0, 1]")
+    if r.max_sector_capital_pct > r.max_deployed_capital_pct:
+        problems.append("MAX_SECTOR_CAPITAL_PCT cannot exceed MAX_DEPLOYED_CAPITAL_PCT")
+    if r.min_conviction < 0 or r.min_conviction > 1:
+        problems.append(f"JEV_CONVICTION_THRESHOLD={r.min_conviction} must be in [0, 1]")
+    if r.min_confidence < 0 or r.min_confidence > 1:
+        problems.append(f"JEV_CONFIDENCE_THRESHOLD={r.min_confidence} must be in [0, 1]")
+    if r.stop_loss_pct <= 0 or r.target_pct <= 0:
+        problems.append("STOP_LOSS_PCT and TARGET_PCT must be > 0")
+    if r.max_concurrent_positions < 1:
+        problems.append("MAX_CONCURRENT_POSITIONS must be >= 1")
+    if r.max_position_capital_inr <= 0:
+        problems.append("MAX_POSITION_CAPITAL_INR must be > 0")
+    if cfg.websocket_enabled:
+        problems.append("WEBSOCKET_ENABLED=true but the WS protocol is still a placeholder")
+    if r.gtt_enabled:
+        problems.append("GTT_ENABLED=true but the GTT endpoint is still a placeholder")
+    if not r.paper_trading:
+        problems.append("PAPER_TRADING=false — live capital path; confirm the pre-flight checklist")
+    return problems
+
+
+def load_config(*, strict: bool = False) -> AppConfig:
+    cfg = AppConfig()
+    if not strict:
+        return cfg
+    problems = validate_config(cfg)
+    if problems:
+        raise RuntimeError("Invalid configuration:\n- " + "\n- ".join(problems))
+    return cfg

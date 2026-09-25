@@ -27,6 +27,10 @@ src/jev_indstocks_trader/
   feature_prep.py       compresses market context for Jev
   instruments.py        symbol -> security_id lookup (Instruments Master)
   watchlist.py          real watchlist source (env var, file, or default)
+  strategies.py         H4/H5 StrategyFn implementations (backtest only)
+  hypothesis.py         strategy vs costed random baseline
+  sectors.py            static NSE sector map (D4)
+  regime.py             realized-vol regime label (D5-lite)
   news_feed.py           RSS/Atom headline ingestion for feature_prep
   market_data.py         WebSocket tick feed with reconnect/backoff (gated, see below)
   retry.py                retry/backoff for flaky reads (not order placement)

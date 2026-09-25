@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 
 from . import auth
 from .audit import AuditTrail
-from .config import load_config
+from .config import load_config, validate_config
 from .costs import CostRates
 from .execution_gateway import ExecutionGateway
 from .exits import ExitManager
@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 def run_loop(poll_interval_s: float = 1.0) -> None:
     load_dotenv()
     cfg = load_config()
+    for warning in validate_config(cfg):
+        logger.warning("config: %s", warning)
 
     def auth_headers_fn():
         return auth.auth_headers(cfg.indstocks)
@@ -213,7 +215,8 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             qty = governor.size_order(equity, live_ltp)
             if qty > 0:
                 portfolio_check = check_portfolio_risk(
-                    position_store, cfg.risk, equity=equity, candidate_capital=qty * live_ltp,
+                    position_store, cfg.risk, equity=equity,
+                    candidate_capital=qty * live_ltp, candidate_symbol=symbol,
                 )
                 if not portfolio_check.approved:
                     logger.debug("Portfolio risk blocked %s: %s", symbol, portfolio_check.reason)
@@ -281,6 +284,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                 opened_at=time.time(),
                 decision_id=decision_id,
                 gtt_id=gtt_id,
+                symbol=symbol,
             ))
 
         if not approved:

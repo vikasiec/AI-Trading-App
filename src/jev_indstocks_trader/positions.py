@@ -35,6 +35,7 @@ class Position:
     opened_at: float          # epoch seconds
     decision_id: str          # links back to the audit trail entry that opened this
     gtt_id: Optional[str] = None  # set when GTT_ENABLED -- the exchange-side OCO order protecting this position
+    symbol: str = ""              # ticker for sector caps; empty on pre-v9 stores
 
 
 class PositionStore:

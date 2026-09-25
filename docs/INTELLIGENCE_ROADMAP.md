@@ -114,10 +114,13 @@ and evaluate on its own before starting the next.
    (+Rs.46 over 500 bars) but was **net negative after real costs**
    (-Rs.148) -- exactly H4's kill criteria, and exactly why "gross P&L on a
    backtest" is not a number to trust without this engine.
-5. **Momentum and mean-reversion hypothesis tests** (H4, H5) **on real
-   historical data**, not synthetic -- next up. The synthetic smoke-test
-   above proves the harness works; it is not a test of H4 itself, since
-   synthetic random-walk data has no real momentum to detect.
+5. **Momentum and mean-reversion hypothesis tests** (H4, H5). **Harness
+   done (v9):** `strategies.py` + `hypothesis.evaluate_vs_baseline` +
+   `scripts/run_hypothesis_tests.py`. A hypothesis survives only if it
+   beats a cadence baseline *net of costs* on the CSV you pass in.
+   Point the script at a real NSE/broker export to actually test H4/H5;
+   unit tests use constructed series to lock the rules, not to claim
+   the hypotheses are true.
 6. **Regime detector** (A2) -- only once H6 shows regime actually matters for Jev's calibration.
 7. **Corporate actions + sector classification** (D3, D4) -- unlocks H7 and a sector-concentration portfolio-risk check.
 8. **Momentum/mean-reversion strategy modules** (A3, A4) and **sector rotation** (A5) -- only for whichever hypotheses above actually survived.

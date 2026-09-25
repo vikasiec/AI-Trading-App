@@ -336,6 +336,18 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 
 ## Changelog
 
+### 2026-09-26 (v9)
+- Roadmap item 5: H4/H5 hypothesis harness. `strategies.py` (momentum,
+  mean-reversion, random baseline), `hypothesis.py` (survive iff net P&L
+  beats baseline after costs), CLI `scripts/run_hypothesis_tests.py`.
+  Not wired into the live loop — that waits on a real-CSV survival.
+- D4 first cut: `sectors.py` static NSE map + `MAX_SECTOR_CAPITAL_PCT`
+  in `portfolio_risk.py`. Positions now carry `symbol`.
+- D5-lite / A2 scaffold: `regime.py` labels calm/normal/violent from
+  realized vol so H6 can be prototyped before an India VIX feed exists.
+- P2: `validate_config()` runs at loop start (warnings); `strict=True`
+  raises. `.env.example` documents the new sector cap.
+
 ### 2026-09-26 (v8)
 - **P0 loop fixes from code review.** The README described a working
   risk system; `main.py` was bypassing two of the controls it advertised.

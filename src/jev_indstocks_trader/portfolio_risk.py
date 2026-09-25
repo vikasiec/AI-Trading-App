@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from .config import RiskConfig
 from .positions import PositionStore
+from .sectors import sector_for
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ def check_portfolio_risk(
     risk_cfg: RiskConfig,
     equity: float,
     candidate_capital: float,
+    candidate_symbol: str = "",
 ) -> PortfolioRiskResult:
     """candidate_capital is the capital the NEW position would tie up,
     checked against the room left after existing open positions.
@@ -58,5 +60,18 @@ def check_portfolio_risk(
             False,
             f"max_deployed_capital_exceeded ({projected_pct:.2%} > {risk_cfg.max_deployed_capital_pct:.2%})",
         )
+
+    if candidate_symbol:
+        sector = sector_for(candidate_symbol)
+        sector_deployed = 0.0
+        for p in open_positions:
+            if sector_for(p.symbol) == sector:
+                sector_deployed += p.entry_price * p.qty
+        sector_pct = (sector_deployed + candidate_capital) / equity
+        if sector_pct > risk_cfg.max_sector_capital_pct:
+            return PortfolioRiskResult(
+                False,
+                f"max_sector_capital_exceeded ({sector} {sector_pct:.2%} > {risk_cfg.max_sector_capital_pct:.2%})",
+            )
 
     return PortfolioRiskResult(True, "approved")
