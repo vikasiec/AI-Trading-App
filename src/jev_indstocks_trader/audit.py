@@ -29,8 +29,16 @@ class AuditTrail:
         latency_ms: float,
         otr_check: str = "PASS",
         order_id: Optional[str] = None,
+        had_news: Optional[bool] = None,
     ) -> str:
-        """Returns a decision_id you can pass to update_outcome() later."""
+        """Returns a decision_id you can pass to update_outcome() later.
+
+        had_news records whether any matching headlines were fed to Jev
+        for this decision -- feeds the H3 news-vs-no-news comparison in
+        calibration.py. None means "unknown" (e.g. no news source
+        configured at all), which calibration.py treats separately from
+        an explicit False.
+        """
         decision_id = f"{security_id}_{int(datetime.now(timezone.utc).timestamp() * 1000)}"
         record = {
             "decision_id": decision_id,
@@ -42,6 +50,7 @@ class AuditTrail:
             "action": action,
             "latency_ms": latency_ms,
             "order_id": order_id,
+            "had_news": had_news,
             "fill_price": None,
             "realized_pnl": None,
         }

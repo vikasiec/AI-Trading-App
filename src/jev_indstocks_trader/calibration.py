@@ -33,6 +33,7 @@ class ClosedTrade:
     jev_confidence: float
     net_pnl: float
     realized_pnl: float
+    had_news: Optional[bool] = None
 
 
 @dataclass
@@ -49,11 +50,19 @@ class BucketStats:
 
 
 @dataclass
+class NewsComparison:
+    with_news: BucketStats
+    without_news: BucketStats
+    unknown: BucketStats  # had_news was None -- no news source was configured for these decisions
+
+
+@dataclass
 class CalibrationReport:
     total_decisions: int
     closed_trades: int
     conviction_buckets: list[BucketStats] = field(default_factory=list)
     confidence_buckets: list[BucketStats] = field(default_factory=list)
+    news_comparison: Optional[NewsComparison] = None
 
     def summary_text(self) -> str:
         lines = [
@@ -65,6 +74,14 @@ class CalibrationReport:
         lines.append("")
         lines.append("-- H2: net P&L by Jev confidence bucket --")
         lines.extend(_format_buckets(self.confidence_buckets))
+        if self.news_comparison is not None:
+            lines.append("")
+            lines.append("-- H3: net P&L with vs. without matched news --")
+            lines.extend(_format_buckets([
+                self.news_comparison.with_news,
+                self.news_comparison.without_news,
+                self.news_comparison.unknown,
+            ]))
         if self.closed_trades < MIN_SAMPLE_SIZE_FOR_CONFIDENCE:
             lines.append("")
             lines.append(
@@ -125,6 +142,7 @@ def load_closed_trades(audit_log_path: Path) -> list[ClosedTrade]:
             jev_confidence=decision["jev_confidence"],
             net_pnl=outcome["net_pnl"],
             realized_pnl=outcome["realized_pnl"],
+            had_news=decision.get("had_news"),
         ))
     return trades
 
@@ -150,6 +168,31 @@ def _bucket_by(trades: list[ClosedTrade], key_fn, edges: list[float]) -> list[Bu
     return buckets
 
 
+def _compute_news_comparison(trades: list[ClosedTrade]) -> NewsComparison:
+    def stats_for(label: str, subset: list[ClosedTrade]) -> BucketStats:
+        n = len(subset)
+        if n == 0:
+            return BucketStats(label, 0, None, None, None)
+        pnls = [t.net_pnl for t in subset]
+        wins = sum(1 for p in pnls if p > 0)
+        return BucketStats(
+            bucket_label=label, n=n,
+            mean_net_pnl=statistics.mean(pnls),
+            median_net_pnl=statistics.median(pnls),
+            win_rate=wins / n,
+        )
+
+    with_news = [t for t in trades if t.had_news is True]
+    without_news = [t for t in trades if t.had_news is False]
+    unknown = [t for t in trades if t.had_news is None]
+
+    return NewsComparison(
+        with_news=stats_for("with_news", with_news),
+        without_news=stats_for("without_news", without_news),
+        unknown=stats_for("unknown (no news source configured)", unknown),
+    )
+
+
 def run_calibration_report(
     audit_log_path: Path,
     total_decisions: Optional[int] = None,
@@ -172,6 +215,7 @@ def run_calibration_report(
         closed_trades=len(trades),
         conviction_buckets=_bucket_by(trades, lambda t: t.jev_conviction, list(bucket_edges)),
         confidence_buckets=_bucket_by(trades, lambda t: t.jev_confidence, list(bucket_edges)),
+        news_comparison=_compute_news_comparison(trades) if trades else None,
     )
 
 

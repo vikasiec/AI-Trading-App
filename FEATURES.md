@@ -211,7 +211,24 @@ is the separate, explicit plan for the part that actually decides whether
 any of this makes money — what data the system needs beyond a live tick,
 what falsifiable hypotheses get tested before any of them become trading
 logic, and what algorithms only get built once a hypothesis survives a real
-backtest. `calibration.py` above is the first item off that backlog.
+backtest. Built so far off that backlog:
+
+- **`calibration.py`** (H1/H2/H3) — see section 5 above.
+- **`historical_data.py`** — loads OHLCV bars for backtesting. The primary
+  path, `load_from_csv()`, needs no broker API at all (point it at any
+  standard OHLCV export), so the backtest engine below is never blocked on
+  an unconfirmed contract. `fetch_from_indstocks()` is a best-effort
+  placeholder for later automation, gated the same way as the WebSocket
+  feed.
+- **`backtest.py`** — an event-driven backtest engine that reuses the
+  *exact same* exit logic (`exits.determine_exit_reason`) and cost engine
+  (`costs.compute_round_trip_cost`) that live trading uses, so a backtest
+  result means what a live result would mean. Strategy-agnostic — takes any
+  `bars_seen_so_far -> enter_long?` function, with no lookahead (a decision
+  on bar *i* fills at bar *i+1*'s open). First smoke-test result: a naive
+  momentum rule on synthetic data looked marginally profitable gross but
+  was **net negative after real costs** — exactly the failure mode this
+  engine exists to catch before it costs real money.
 
 ### 7. Wiring and operations
 
@@ -289,7 +306,7 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 - [x] Order/position reconciliation loop (`reconciliation.py`) — runs every 60s, alerts on mismatch, does not auto-correct *(v4)*
 - [x] Reconnect/backoff for the market-data feed and for LTP/Jev reads *(v3)*
 - [x] Scheduled job to score `audit_trail.jsonl` outcomes against logged Jev conviction, validating the 0.80 threshold instead of assuming it -- `calibration.py` built and tested; still needs real trading volume to produce a meaningful result *(v5)*
-- [ ] Backtesting harness against historical data, isolated from the live/paper code path
+- [x] Backtesting harness against historical data, isolated from the live/paper code path -- `backtest.py`, reuses the same exit/cost logic as live trading *(v6)*
 - [ ] GTT / bracket orders — exchange-side stop-loss + target placed atomically with entry (client-side stops in `exits.py` die if the process crashes; this is the remaining gap that closes)
 
 ### P2 — production hardening
@@ -304,6 +321,31 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 ---
 
 ## Changelog
+
+### 2026-09-25 (v6)
+- **H3 news comparison**: `audit.py` now records `had_news` on every
+  decision; `calibration.py` reports a three-way with-news / without-news /
+  unknown net-P&L split.
+- **`historical_data.py`**: `load_from_csv()` (always works, no API
+  dependency) plus `fetch_from_indstocks()` (best-effort placeholder,
+  same "confirm before relying on this" treatment as `market_data.py`'s
+  WebSocket feed). Decouples the backtest engine from any unconfirmed
+  broker contract.
+- **`backtest.py`**: event-driven, strategy-agnostic backtest engine.
+  Reuses `exits.determine_exit_reason()` and `costs.compute_round_trip_cost()`
+  directly from the live code path -- not a reimplementation -- so a
+  backtest result means the same thing a live result would. No-lookahead
+  fill model (signal on bar *i* fills at bar *i+1*'s open). First
+  smoke-test: a naive momentum rule on synthetic data was gross-positive
+  but net-negative after real costs, demonstrating exactly why this engine
+  needed to exist before any hypothesis test could be trusted.
+- 20 new tests (news-comparison bucketing, CSV round-trip, backtest exit
+  branches, cost-sensitivity, force-close-at-end-of-data). Full suite:
+  72/72 passing.
+- `docs/INTELLIGENCE_ROADMAP.md` and `FEATURES.md` updated: backlog items
+  2-4 (news comparison, historical data, backtest engine) marked done; H4/H5
+  momentum and mean-reversion tests on *real* (not synthetic) historical
+  data are next.
 
 ### 2026-09-25 (v5)
 - **`docs/INTELLIGENCE_ROADMAP.md`**: the full plan for the trading

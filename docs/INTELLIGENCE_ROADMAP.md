@@ -33,7 +33,7 @@ what unblocks the most downstream work per unit of effort.
 | # | Data | Why it's needed | Status |
 |---|---|---|---|
 | D1 | **Audit trail of Jev scores + outcomes** (`audit_trail.jsonl`) | The single most important dataset in the whole system -- every conviction score this bot has ever produced, linked to what actually happened. Without this, "is Jev any good" is unanswerable. | **Already being collected** (`audit.py`), just not yet analyzed |
-| D2 | **Historical OHLCV bars** (per symbol, at least daily, ideally intraday) | Needed to backtest ANY price-based hypothesis before risking capital on it. Currently the only price data the system has is the live tick. | Not started -- INDstocks' Historical Data API endpoint exists but its exact parameters weren't confirmed while building this; same caveat as the Instruments Master and WebSocket gaps |
+| D2 | **Historical OHLCV bars** (per symbol, at least daily, ideally intraday) | Needed to backtest ANY price-based hypothesis before risking capital on it. Currently the only price data the system has is the live tick. | **CSV-loading path done (v6)**; `fetch_from_indstocks()` still a placeholder, same caveat as the Instruments Master and WebSocket gaps |
 | D3 | **Corporate actions / earnings calendar** | Distinguishes "this stock moved because of news" from "this stock moved because of an earnings surprise" -- needed to interpret both Jev's headline-driven context and any news hypothesis | Not started |
 | D4 | **Sector/index classification per symbol** | Needed for any sector-rotation or relative-strength hypothesis, and for a smarter portfolio-risk check (the current `portfolio_risk.py` caps position *count* and *capital*, not sector concentration) | Not started |
 | D5 | **India VIX / market-wide volatility regime** | A single symbol's price action means something different in a calm market vs. a violent one; several hypotheses below need to condition on regime | Not started |
@@ -94,16 +94,35 @@ should be started now.
 This is the order to actually build in. Each item is small enough to ship
 and evaluate on its own before starting the next.
 
-1. **`calibration.py`** -- analyze `audit_trail.jsonl`, test H1 and H2. *(building now, see below)*
-2. **News-vs-no-news comparison** -- H3, a small extension of the same script once enough decisions have accumulated with and without headlines.
-3. **Historical data ingestion** (D2) -- confirm INDstocks' Historical Data API and build a fetcher, gated the same way `market_data.py`'s WebSocket is if the protocol can't be confirmed.
-4. **Backtest engine** (A6) -- reuses `risk_governor.py`, `exits.py`, `costs.py` against historical bars instead of live ticks.
-5. **Momentum and mean-reversion hypothesis tests** (H4, H5) on the backtest engine -- these are experiments, not features; most hypotheses tested this way will fail, and that's the system working correctly.
+1. **`calibration.py`** -- analyze `audit_trail.jsonl`, test H1 and H2. **Done (v5).**
+2. **News-vs-no-news comparison** -- H3. **Done (v6)**: `had_news` is now
+   recorded on every decision and `calibration.py` reports a three-way split
+   (with news / without news / unknown, for decisions made before any news
+   source was configured).
+3. **Historical data ingestion** (D2). **Done (v6)**, via a route that avoids
+   the unconfirmed-API problem entirely: `historical_data.py`'s primary path
+   is `load_from_csv()`, which needs no INDstocks API contract at all --
+   point it at any OHLCV export (NSE's own, a broker's, or INDstocks'
+   Historical Data endpoint downloaded by hand). A `fetch_from_indstocks()`
+   placeholder exists for later automation but nothing depends on it being
+   correct yet.
+4. **Backtest engine** (A6). **Done (v6)**: `backtest.py` reuses the exact
+   same `exits.determine_exit_reason()` and `costs.compute_round_trip_cost()`
+   that live trading uses, strategy-agnostic (takes any `bars -> enter_long?`
+   function). First real result: a naive momentum rule (price up >0.5% over
+   5 bars) backtested on synthetic data looked marginally profitable gross
+   (+Rs.46 over 500 bars) but was **net negative after real costs**
+   (-Rs.148) -- exactly H4's kill criteria, and exactly why "gross P&L on a
+   backtest" is not a number to trust without this engine.
+5. **Momentum and mean-reversion hypothesis tests** (H4, H5) **on real
+   historical data**, not synthetic -- next up. The synthetic smoke-test
+   above proves the harness works; it is not a test of H4 itself, since
+   synthetic random-walk data has no real momentum to detect.
 6. **Regime detector** (A2) -- only once H6 shows regime actually matters for Jev's calibration.
 7. **Corporate actions + sector classification** (D3, D4) -- unlocks H7 and a sector-concentration portfolio-risk check.
 8. **Momentum/mean-reversion strategy modules** (A3, A4) and **sector rotation** (A5) -- only for whichever hypotheses above actually survived.
 
-Everything past item 4 is explicitly conditional -- this backlog does not
+Everything past item 5 is explicitly conditional -- this backlog does not
 promise A3-A5 will get built, because the hypotheses behind them might not
 survive contact with real data. That's the intended outcome of doing this in
 hypothesis-first order rather than algorithm-first order.
@@ -112,14 +131,16 @@ hypothesis-first order rather than algorithm-first order.
 
 ## What's built so far from this plan
 
-### `calibration.py` -- Jev score vs. outcome analysis (H1, H2)
+### `calibration.py` -- Jev score vs. outcome analysis (H1, H2, H3)
 
 Reads `audit_trail.jsonl`, joins each `log_decision` record to its
 `outcome_update` by `decision_id`, and buckets closed trades by Jev
 conviction score (and separately by confidence) to report mean and median
-net P&L per bucket, win rate per bucket, and sample size per bucket. This is
-the first honest look at whether Jev's score means anything, using data the
-system was already collecting.
+net P&L per bucket, win rate per bucket, and sample size per bucket. Also
+splits closed trades by whether matching news headlines were present at
+scoring time (H3), reported as a three-way with-news / without-news /
+unknown comparison. This is the first honest look at whether Jev's score
+means anything, using data the system was already collecting.
 
 **Reading the output responsibly:** with only a handful of paper trades
 logged so far, every bucket will have a tiny sample size and the results are
@@ -127,3 +148,23 @@ not yet meaningful -- the report says so explicitly rather than implying
 false confidence. This becomes useful once enough decisions have accumulated
 (see the sample-size warning the tool prints). Treat early runs as "is the
 plumbing correct," not "is Jev good."
+
+### `historical_data.py` -- OHLCV bar loading (D2)
+
+`load_from_csv()` is the primary, always-working path: standard
+timestamp/open/high/low/close/volume columns, no API dependency, so
+everything built on top of it (the backtest engine, future H4/H5 tests) is
+never blocked on an unconfirmed broker contract. `fetch_from_indstocks()` is
+a best-effort placeholder for later automation, following the same
+gated-and-clearly-labeled pattern as `market_data.py`'s WebSocket feed.
+
+### `backtest.py` -- event-driven backtest engine (A6)
+
+Strategy-agnostic: takes any function `bars_seen_so_far -> enter_long?` (no
+lookahead -- only bars up to and including the current one are visible when
+deciding). Fills a signal at the *next* bar's open, not the deciding bar's
+close, to avoid same-bar lookahead bias. Reuses the identical exit logic
+(`exits.determine_exit_reason`) and cost engine (`costs.compute_round_trip_cost`)
+that live trading uses, so a backtest result means the same thing a live
+result would under the same rules. Reports gross P&L, net P&L, cost drag,
+win rate, and per-trade detail including which exit rule fired.

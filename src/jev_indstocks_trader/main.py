@@ -202,6 +202,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             latency_ms=latency_ms,
             otr_check="PASS",
             order_id=order_id,
+            had_news=(len(headlines) > 0) if news_source is not None else None,
         )
 
         if approved and qty > 0:

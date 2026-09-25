@@ -108,3 +108,27 @@ def test_summary_text_does_not_raise_on_empty(tmp_path):
     report = run_calibration_report(path)
     text = report.summary_text()
     assert "0 closed trades" in text.lower() or "closed trades: 0" in text.lower() or "closed trades" in text.lower()
+
+
+def test_news_comparison_splits_by_had_news(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    records = []
+    for i, (had_news, pnl) in enumerate([
+        (True, 50.0), (True, 70.0),
+        (False, -10.0), (False, 5.0),
+        (None, 20.0),
+    ]):
+        did = f"SEC{i}_1"
+        records.append({"decision_id": did, "security_id": f"SEC{i}", "jev_conviction": 0.7,
+                         "jev_confidence": 0.7, "action": "BUY", "latency_ms": 100, "had_news": had_news})
+        records.append({"decision_id": did, "type": "outcome_update", "fill_price": 100.0,
+                         "realized_pnl": pnl, "net_pnl": pnl, "costs": {}})
+    _write_jsonl(path, records)
+
+    report = run_calibration_report(path)
+    assert report.news_comparison is not None
+    assert report.news_comparison.with_news.n == 2
+    assert report.news_comparison.without_news.n == 2
+    assert report.news_comparison.unknown.n == 1
+    assert report.news_comparison.with_news.mean_net_pnl == 60.0
+    assert "H3" in report.summary_text()
