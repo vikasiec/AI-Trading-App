@@ -190,7 +190,30 @@ gross P&L, net-of-cost P&L, and the full cost breakdown, linked by
 and the dataset a future calibration job checks Jev's conviction scores
 against.
 
-### 6. Wiring and operations
+**Jev calibration analysis (`calibration.py`, `scripts/run_calibration_report.py`)**
+Tests the load-bearing assumption of the whole system: does Jev's conviction
+score actually predict profitable trades? Reads `audit_trail.jsonl`, joins
+each decision to its closed-trade outcome, and buckets by conviction (and
+separately by confidence) to report mean/median net P&L and win rate per
+bucket. Deliberately a report for a human to read, not a signal the bot acts
+on — the 0.80 threshold in `RiskConfig` stays a config constant until this
+analysis, run on a real sample, says otherwise. Flags explicitly when a
+bucket's sample size is too small to mean anything (fewer than 30 trades),
+rather than implying false confidence from a handful of paper trades. See
+`docs/INTELLIGENCE_ROADMAP.md` for the full hypothesis this tests (H1, H2)
+and everything queued up behind it.
+
+### 6. Intelligence layer — see `docs/INTELLIGENCE_ROADMAP.md`
+
+Everything above is plumbing: it gets an order to the exchange correctly,
+safely, with the right costs and risk limits. `docs/INTELLIGENCE_ROADMAP.md`
+is the separate, explicit plan for the part that actually decides whether
+any of this makes money — what data the system needs beyond a live tick,
+what falsifiable hypotheses get tested before any of them become trading
+logic, and what algorithms only get built once a hypothesis survives a real
+backtest. `calibration.py` above is the first item off that backlog.
+
+### 7. Wiring and operations
 
 **Main trading loop (`main.py`)**
 Every tick, in order: reconcile (if due) -> check exits -> look for new
@@ -234,11 +257,14 @@ cache round-trips, and Telegram authorization. Runs on every push to `main`.
 
 - No integration test against a real or sandboxed INDstocks/Jev response —
   only unit-level coverage exists so far.
-- No Jev shadow-mode logging run yet (see `docs/ARCHITECTURE.md` Sec.6 and
-  Sec.10) — the 0.80 conviction threshold is unvalidated against real
-  outcomes.
+- Jev shadow-mode logging hasn't accumulated a real sample yet — `calibration.py`
+  is built and tested, but needs actual paper-trading volume before its
+  output means anything (see `docs/INTELLIGENCE_ROADMAP.md`).
 - No backtesting harness.
 - No GTT/exchange-side bracket orders — exits are client-side (see Roadmap).
+- See `docs/INTELLIGENCE_ROADMAP.md` for the much larger backlog of data,
+  hypotheses, and algorithms behind the trading intelligence itself, as
+  opposed to the infrastructure around it.
 
 ---
 
@@ -262,8 +288,8 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 - [x] Portfolio-level risk (`portfolio_risk.py`) — max concurrent positions + max deployed capital *(v4)*
 - [x] Order/position reconciliation loop (`reconciliation.py`) — runs every 60s, alerts on mismatch, does not auto-correct *(v4)*
 - [x] Reconnect/backoff for the market-data feed and for LTP/Jev reads *(v3)*
+- [x] Scheduled job to score `audit_trail.jsonl` outcomes against logged Jev conviction, validating the 0.80 threshold instead of assuming it -- `calibration.py` built and tested; still needs real trading volume to produce a meaningful result *(v5)*
 - [ ] Backtesting harness against historical data, isolated from the live/paper code path
-- [ ] Scheduled job to score `audit_trail.jsonl` outcomes against logged Jev conviction, validating the 0.80 threshold instead of assuming it
 - [ ] GTT / bracket orders — exchange-side stop-loss + target placed atomically with entry (client-side stops in `exits.py` die if the process crashes; this is the remaining gap that closes)
 
 ### P2 — production hardening
@@ -278,6 +304,27 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 ---
 
 ## Changelog
+
+### 2026-09-25 (v5)
+- **`docs/INTELLIGENCE_ROADMAP.md`**: the full plan for the trading
+  intelligence itself, as distinct from the infrastructure around it --
+  sequenced Data -> Hypotheses -> Algorithms, since testing a hypothesis
+  needs data that doesn't exist yet for most of it, and an algorithm should
+  only get built once its hypothesis has survived a real backtest. Lists 6
+  data sources, 7 falsifiable hypotheses (each with what it needs and its
+  kill criteria), and 6 candidate algorithms, plus a sequenced 8-item
+  backlog for building them one at a time.
+- **`calibration.py`**: item #1 off that backlog. Reads `audit_trail.jsonl`,
+  joins every decision to its closed-trade outcome, and buckets by Jev
+  conviction and confidence to report mean/median net P&L and win rate per
+  bucket -- the first real test of whether Jev's score means anything,
+  using data the system was already collecting. Explicitly flags when a
+  bucket's sample is too small to trust (<30 trades) rather than implying
+  false confidence from early paper trading. `scripts/run_calibration_report.py`
+  is the CLI entrypoint.
+- 8 new tests (empty/missing log handling, decision-outcome joining,
+  bucketing correctness, win-rate math, small-sample flagging). Full suite:
+  60/60 passing.
 
 ### 2026-09-25 (v4)
 - **Statutory cost engine** (`costs.py`): brokerage, STT (intraday vs.

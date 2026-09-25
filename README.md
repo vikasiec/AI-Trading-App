@@ -3,7 +3,9 @@
 AI scores conviction; deterministic code owns sizing, risk, and order lifecycle.
 
 Full design doc, architecture diagram, and change log vs. the original draft:
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The separate plan for the
+trading *intelligence* itself -- what data, what hypotheses, what
+algorithms, in that order -- is [`docs/INTELLIGENCE_ROADMAP.md`](docs/INTELLIGENCE_ROADMAP.md).
 
 ## Status
 
@@ -34,11 +36,14 @@ src/jev_indstocks_trader/
   reconciliation.py       periodic local-vs-broker position cross-check
   telegram_alerts.py    alerts + authenticated remote kill switch
   audit.py               JSONL audit trail for OTR review + Jev calibration
+  calibration.py          analyzes audit_trail.jsonl: does Jev's score predict outcomes?
   main.py                wires it all together, the trading loop entrypoint
 scripts/
   refresh_token.py      cron entrypoint -- the ONE process allowed to refresh the token
-tests/                   pytest suite (52 tests) covering risk governor, portfolio risk, costs, auth, exits, reconciliation, watchlist, retry, news/ticks, and Telegram auth checks
+  run_calibration_report.py  CLI: prints the Jev calibration report
+tests/                   pytest suite (60 tests) covering risk governor, portfolio risk, costs, auth, exits, reconciliation, watchlist, retry, news/ticks, calibration, and Telegram auth checks
 docs/ARCHITECTURE.md     full design doc + Mermaid architecture diagram
+docs/INTELLIGENCE_ROADMAP.md  data / hypotheses / algorithms backlog for the trading intelligence itself
 FEATURES.md               living feature list, roadmap, and changelog
 ```
 
