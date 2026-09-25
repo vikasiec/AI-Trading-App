@@ -39,7 +39,8 @@ class INDstocksConfig:
 @dataclass(frozen=True)
 class JevConfig:
     api_key: str = field(default_factory=lambda: _require("JEV_API_KEY"))
-    base_url: str = field(default_factory=lambda: _optional("JEV_BASE_URL", "https://api.typesafe.ai/v1/system-one"))
+    base_url: str = field(default_factory=lambda: _optional("JEV_BASE_URL", "https://api.typesafe.ai/v1/systemone"))
+    model: str = field(default_factory=lambda: _optional("JEV_MODEL", "jev-latest"))
     conviction_threshold: float = field(default_factory=lambda: float(_optional("JEV_CONVICTION_THRESHOLD", "0.80")))
     confidence_threshold: float = field(default_factory=lambda: float(_optional("JEV_CONFIDENCE_THRESHOLD", "0.60")))
     request_timeout_s: float = field(default_factory=lambda: float(_optional("JEV_TIMEOUT_S", "2.0")))
@@ -80,6 +81,12 @@ class AppConfig:
     positions_store_path: Path = field(
         default_factory=lambda: Path(_optional("POSITIONS_STORE_PATH", str(Path.home() / ".indstocks" / "open_positions.json")))
     )
+    watchlist_symbols: str = field(default_factory=lambda: _optional("WATCHLIST_SYMBOLS", ""))
+    watchlist_file: str = field(default_factory=lambda: _optional("WATCHLIST_FILE", ""))
+    news_rss_feeds: str = field(default_factory=lambda: _optional("NEWS_RSS_FEEDS", ""))
+    news_cache_ttl_s: float = field(default_factory=lambda: float(_optional("NEWS_CACHE_TTL_S", "300")))
+    websocket_enabled: bool = field(default_factory=lambda: _optional("WEBSOCKET_ENABLED", "false").lower() == "true")
+    websocket_url: str = field(default_factory=lambda: _optional("INDSTOCKS_WEBSOCKET_URL", "wss://api.indstocks.com/market/stream"))
 
 
 def load_config() -> AppConfig:

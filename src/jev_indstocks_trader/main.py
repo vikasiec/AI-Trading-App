@@ -6,9 +6,10 @@ INDstocksAuth.refresh_session() itself. See scripts/refresh_token.py for
 the single owner process that does that, on its own cron schedule.
 
 Every tick: check exits first (closing existing risk), then look for
-new entries (opening new risk). A position this bot opens is always
-tracked in PositionStore with a stop-loss, target, and max-hold-time --
-ExitManager is what actually closes it out.
+new entries (opening new risk) across the configured watchlist. LTP
+comes from the WebSocket feed when it has a fresh tick, and falls back
+to the REST poll otherwise -- see market_data.py for why the feed is
+gated behind WEBSOCKET_ENABLED.
 
 Usage:
     python -m jev_indstocks_trader.main
@@ -28,9 +29,13 @@ from .exits import ExitManager
 from .feature_prep import MarketSnapshot, build_context
 from .instruments import InstrumentsMaster
 from .jev_client import JevEvaluator
+from .market_data import INDstocksWebSocketFeed, LiveTickCache
+from .news_feed import NewsSource
 from .positions import Position, PositionStore
+from .retry import retry_with_backoff
 from .risk_governor import RiskGovernor
 from .telegram_alerts import TelegramAlertNotifier
+from .watchlist import load_watchlist
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -59,6 +64,27 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
         paper_trading=cfg.risk.paper_trading,
     )
 
+    watchlist = load_watchlist(cfg)
+    logger.info("Watchlist: %s", watchlist)
+
+    news_urls = [u.strip() for u in cfg.news_rss_feeds.split(",") if u.strip()]
+    news_source = NewsSource(news_urls, cache_ttl_s=cfg.news_cache_ttl_s) if news_urls else None
+    if news_source is None:
+        logger.warning("No NEWS_RSS_FEEDS configured -- Jev will score on price data alone")
+
+    tick_cache = LiveTickCache()
+    ws_feed = None
+    if cfg.websocket_enabled:
+        try:
+            resolved = [instruments.resolve(sym) for sym in watchlist]
+            scrip_codes = [r.get("scrip_code") or f"NSE_{r['security_id']}" for r in resolved]
+            ws_feed = INDstocksWebSocketFeed(cfg.websocket_url, auth_headers_fn, scrip_codes, tick_cache)
+            ws_feed.start()
+        except Exception:
+            logger.exception("Could not start WebSocket feed -- falling back to REST polling for all symbols")
+    else:
+        logger.info("WEBSOCKET_ENABLED=false -- using REST polling for LTP")
+
     if cfg.risk.paper_trading:
         logger.warning("PAPER_TRADING=true -- signals will be scored and logged, NO real orders will be sent.")
 
@@ -70,23 +96,33 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     try:
         while True:
             exit_manager.check_and_exit_all()
-            _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier, position_store)
+            _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
+                  position_store, watchlist, news_source, tick_cache)
             time.sleep(poll_interval_s)
     except KeyboardInterrupt:
         logger.info("Shutdown requested, exiting cleanly.")
+    finally:
+        if ws_feed is not None:
+            ws_feed.stop()
 
 
-def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier, position_store) -> None:
-    """One iteration: fetch a snapshot, score it, and (maybe) open a new position.
+def _get_ltp(gateway: ExecutionGateway, tick_cache: LiveTickCache, scrip_code: str) -> float:
+    """WebSocket tick if fresh, else a retried REST poll."""
+    live = tick_cache.get_fresh(scrip_code)
+    if live is not None:
+        return live
+    return retry_with_backoff(
+        lambda: gateway.get_ltp(scrip_code), max_retries=3, base_delay_s=0.5,
+    )
 
-    Exit checks run separately, before this, in run_loop() -- closing
-    existing risk always happens before opening new risk.
 
-    This is a stub wiring point -- plug in your real market-data and
-    watchlist source instead of the placeholder snapshot below.
+def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
+          position_store, watchlist, news_source, tick_cache) -> None:
+    """One iteration: fetch a snapshot per watchlist symbol, score it, and
+    (maybe) open a new position. Exit checks run separately, before this,
+    in run_loop() -- closing existing risk always happens before opening
+    new risk.
     """
-    watchlist = ["RELIANCE"]  # TODO: replace with your real watchlist source
-
     for symbol in watchlist:
         try:
             instrument = instruments.resolve(symbol)
@@ -100,13 +136,23 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier, posit
             continue
 
         scrip_code = instrument.get("scrip_code") or f"NSE_{security_id}"
-        ltp = gateway.get_ltp(scrip_code)
 
-        snapshot = MarketSnapshot(symbol=symbol, ltp=ltp, day_change_pct=0.0, volume=0, headlines=[])
+        try:
+            ltp = _get_ltp(gateway, tick_cache, scrip_code)
+        except Exception:
+            logger.exception("Could not get LTP for %s after retries, skipping this tick", symbol)
+            continue
+
+        headlines = news_source.headlines_for(symbol, instrument.get("name")) if news_source else []
+        snapshot = MarketSnapshot(symbol=symbol, ltp=ltp, day_change_pct=0.0, volume=0, headlines=headlines)
         context = build_context(snapshot)
 
         t0 = time.monotonic()
-        result = evaluator.evaluate_signal(context)
+        try:
+            result = retry_with_backoff(lambda: evaluator.evaluate_signal(context), max_retries=2, base_delay_s=0.5)
+        except Exception:
+            logger.exception("Jev scoring failed for %s after retries, skipping this tick", symbol)
+            continue
         latency_ms = (time.monotonic() - t0) * 1000
 
         approved, reason = governor.validate_trade(

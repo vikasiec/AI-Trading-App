@@ -21,15 +21,22 @@ src/jev_indstocks_trader/
   jev_client.py         Jev AI (System One) conviction scoring
   feature_prep.py       compresses market context for Jev
   instruments.py        symbol -> security_id lookup (Instruments Master)
+  watchlist.py          real watchlist source (env var, file, or default)
+  news_feed.py           RSS/Atom headline ingestion for feature_prep
+  market_data.py         WebSocket tick feed with reconnect/backoff (gated, see below)
+  retry.py                retry/backoff for flaky reads (not order placement)
   risk_governor.py      sizing, drawdown, idempotency, kill switch
   execution_gateway.py  INDstocks order placement / order book / funds
+  positions.py            persisted open-position store with exit rules
+  exits.py                stop-loss / target / time-based exit checks
   telegram_alerts.py    alerts + authenticated remote kill switch
   audit.py               JSONL audit trail for OTR review + Jev calibration
   main.py                wires it all together, the trading loop entrypoint
 scripts/
   refresh_token.py      cron entrypoint -- the ONE process allowed to refresh the token
-tests/                   pytest suite covering the risk governor and auth/telegram auth checks
+tests/                   pytest suite (36 tests) covering risk governor, auth, exits, watchlist, retry, news/ticks, and Telegram auth checks
 docs/ARCHITECTURE.md     full design doc + Mermaid architecture diagram
+FEATURES.md               living feature list, roadmap, and changelog
 ```
 
 ## Setup
@@ -61,12 +68,19 @@ warning in `scripts/refresh_token.py` and `docs/ARCHITECTURE.md` §5):
 
 ## What's still a placeholder
 
-- `main.py`'s watchlist and `feature_prep.py`'s data source are stubs --
-  wire in your real tick/news feed.
-- `instruments.py`'s CSV column names are a best guess pending
-  confirmation against the current Instruments Master schema.
-- `jev_client.py`'s endpoint URL should be confirmed against Jev's
-  current docs before going live -- it's a young, fast-moving API.
+See [`FEATURES.md`](FEATURES.md) for the full, currently-maintained list.
+As of this writing:
+
+- `instruments.py`'s exact CSV column names are still a best guess --
+  the general symbol → security_id/scrip_code shape is corroborated by a
+  third-party INDstocks MCP tool, but not the literal header names.
+- `market_data.py`'s WebSocket protocol (URL, subscribe/tick message
+  shapes) is a best-effort placeholder -- **gated behind
+  `WEBSOCKET_ENABLED=false`** for exactly this reason. `main.py` falls
+  back to the already-confirmed REST `/market/quotes/ltp` poll whenever
+  the feed is off or has no fresh tick.
+- No traded instrument is chosen yet (Nifty future vs. ETF vs.
+  individual equities) -- that's a strategy decision, not a wiring gap.
 
 ## Safety
 

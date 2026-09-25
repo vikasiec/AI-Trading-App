@@ -6,10 +6,10 @@ or places orders. Treat its score as calibrated on the *question asked*,
 not as a probability of profit; that mapping only exists once you've
 measured logged scores against real trade outcomes (see audit.py).
 
-NOTE: verify the endpoint path and exact response schema against Jev's
-current docs before relying on this in production -- confirmed details
-below are from public documentation as of Sept 2026; the API is new and
-may change.
+Endpoint and payload shape confirmed against TypeSafe's public API
+reference (POST https://api.typesafe.ai/v1/systemone, body: model,
+state, questions; response: model, answers, usage) -- re-verify before
+relying on this if TypeSafe's API has changed since.
 """
 from __future__ import annotations
 
@@ -43,6 +43,7 @@ class JevEvaluator:
         summarizer.
         """
         payload = {
+            "model": self.cfg.model,
             "state": market_context,
             "questions": {
                 "conviction": {
