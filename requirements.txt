@@ -1,0 +1,6 @@
+requests>=2.31
+pyotp>=2.9
+python-dotenv>=1.0
+pyTelegramBotAPI>=4.14
+pytest>=8.0
+pytest-mock>=3.12

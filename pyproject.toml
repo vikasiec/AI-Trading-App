@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jev-indstocks-trader"
+version = "0.1.0"
+description = "Jev AI + INDstocks automated trading system"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "pyotp>=2.9",
+    "python-dotenv>=1.0",
+    "pyTelegramBotAPI>=4.14",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

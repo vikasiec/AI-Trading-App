@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+*.jsonl
+.indstocks/
+session_token.json
+instruments_master.csv
+.pytest_cache/
+.mypy_cache/
+.DS_Store
