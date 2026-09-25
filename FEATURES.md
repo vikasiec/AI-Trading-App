@@ -50,7 +50,43 @@ Checklist before anything here touches live capital.
 
 ---
 
+## Roadmap — next set of features
+
+Grouped by priority. P0 blocks paper trading from being meaningful; P1 is needed
+before real capital; P2 is production hardening once P0/P1 are done.
+
+### P0 — makes paper trading meaningful
+
+- [ ] Real market-data feed: WebSocket tick stream, replacing the per-symbol `/market/quotes/ltp` poll in `main.py`
+- [ ] Real watchlist/universe selection, replacing the hardcoded `["RELIANCE"]`
+- [ ] News/filing ingestion for `feature_prep.py` -- `headlines` is currently always empty, so Jev only ever sees price data
+- [ ] Confirm Jev's real endpoint + response schema (`jev_client.py` is a placeholder)
+- [ ] Confirm Instruments Master CSV schema (`instruments.py` is a best guess)
+- [ ] **Exit logic** -- stop-loss, target, and time-based exits. Nothing in the current codebase closes a position; it only knows how to enter.
+
+### P1 — before real capital
+
+- [ ] Statutory cost engine (STT / GST / SEBI fees / brokerage) so backtests reflect net edge, not gross
+- [ ] Backtesting harness against historical data, isolated from the live/paper code path
+- [ ] Scheduled job to score `audit_trail.jsonl` outcomes against logged Jev conviction, validating the 0.80 threshold instead of assuming it
+- [ ] Portfolio-level risk: aggregate exposure across symbols, correlation/sector concentration limits, max concurrent positions -- the risk governor currently reasons per-order only
+- [ ] GTT / bracket orders -- exchange-side stop-loss + target placed atomically with entry (client-side stops die if the process crashes)
+- [ ] Order/position reconciliation loop -- periodic polling of `/order-book` and `/positions`, not just the one-time load on startup
+- [ ] Reconnect/backoff for the market-data feed and for INDstocks/Jev API failures -- a network blip currently just throws
+
+### P2 — production hardening
+
+- [ ] Structured logging shipped somewhere durable, not just stdout
+- [ ] Metrics/dashboard: live P&L, open exposure, win rate, Jev calibration drift over time
+- [ ] Health-check + external uptime monitor, distinct from the Telegram heartbeat
+- [ ] Multi-instrument, multi-strategy support (currently one strategy, one signal type)
+- [ ] Config validation on startup -- catch a bad `.env` before market open, not mid-loop
+- [ ] Secrets management beyond `.env` once this runs on a real server long-term
+
+---
+
 ## Changelog
 
 ### 2026-09-25
 - Initial scaffold pushed: three-tier architecture (Jev scoring → risk governor → INDstocks execution), auth, risk governor, execution gateway, Telegram alerts, audit trail, main loop, test suite, CI.
+- Added prioritized roadmap (P0/P1/P2) for the next set of features.
