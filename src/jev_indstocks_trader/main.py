@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 from . import auth
 from .audit import AuditTrail
 from .config import load_config
+from .costs import CostRates
 from .execution_gateway import ExecutionGateway
 from .exits import ExitManager
 from .feature_prep import MarketSnapshot, build_context
@@ -31,7 +32,9 @@ from .instruments import InstrumentsMaster
 from .jev_client import JevEvaluator
 from .market_data import INDstocksWebSocketFeed, LiveTickCache
 from .news_feed import NewsSource
+from .portfolio_risk import check_portfolio_risk
 from .positions import Position, PositionStore
+from .reconciliation import ReconciliationService
 from .retry import retry_with_backoff
 from .risk_governor import RiskGovernor
 from .telegram_alerts import TelegramAlertNotifier
@@ -62,7 +65,9 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
         max_hold_minutes=cfg.risk.max_hold_minutes,
         notifier=notifier,
         paper_trading=cfg.risk.paper_trading,
+        cost_rates=CostRates(brokerage_per_order=cfg.risk.brokerage_per_order_inr),
     )
+    reconciler = ReconciliationService(gateway, position_store, interval_s=60.0, notifier=notifier)
 
     watchlist = load_watchlist(cfg)
     logger.info("Watchlist: %s", watchlist)
@@ -95,6 +100,8 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     logger.info("Trading loop starting. Ctrl+C to stop.")
     try:
         while True:
+            if reconciler.due():
+                reconciler.reconcile()
             exit_manager.check_and_exit_all()
             _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                   position_store, watchlist, news_source, tick_cache)
@@ -171,7 +178,15 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             equity = funds.get("sod_balance", 0.0)
             qty = governor.size_order(equity, ltp)
             if qty > 0:
-                if not cfg.risk.paper_trading:
+                portfolio_check = check_portfolio_risk(
+                    position_store, cfg.risk, equity=equity, candidate_capital=qty * ltp,
+                )
+                if not portfolio_check.approved:
+                    logger.debug("Portfolio risk blocked %s: %s", symbol, portfolio_check.reason)
+                    qty = 0
+                    reason = portfolio_check.reason
+                    approved = False
+                elif not cfg.risk.paper_trading:
                     order = gateway.place_limit_order(security_id, "BUY", qty, ltp)
                     order_id = order.get("data", {}).get("order_id")
                     action = "BUY"

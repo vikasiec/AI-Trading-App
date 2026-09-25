@@ -26,15 +26,18 @@ src/jev_indstocks_trader/
   market_data.py         WebSocket tick feed with reconnect/backoff (gated, see below)
   retry.py                retry/backoff for flaky reads (not order placement)
   risk_governor.py      sizing, drawdown, idempotency, kill switch
+  portfolio_risk.py       aggregate exposure caps across all open positions
+  costs.py                statutory cost engine (STT/GST/exchange/SEBI/stamp duty)
   execution_gateway.py  INDstocks order placement / order book / funds
   positions.py            persisted open-position store with exit rules
   exits.py                stop-loss / target / time-based exit checks
+  reconciliation.py       periodic local-vs-broker position cross-check
   telegram_alerts.py    alerts + authenticated remote kill switch
   audit.py               JSONL audit trail for OTR review + Jev calibration
   main.py                wires it all together, the trading loop entrypoint
 scripts/
   refresh_token.py      cron entrypoint -- the ONE process allowed to refresh the token
-tests/                   pytest suite (36 tests) covering risk governor, auth, exits, watchlist, retry, news/ticks, and Telegram auth checks
+tests/                   pytest suite (52 tests) covering risk governor, portfolio risk, costs, auth, exits, reconciliation, watchlist, retry, news/ticks, and Telegram auth checks
 docs/ARCHITECTURE.md     full design doc + Mermaid architecture diagram
 FEATURES.md               living feature list, roadmap, and changelog
 ```

@@ -69,6 +69,10 @@ class RiskConfig:
     stop_loss_pct: float = field(default_factory=lambda: float(_optional("STOP_LOSS_PCT", "0.01")))
     target_pct: float = field(default_factory=lambda: float(_optional("TARGET_PCT", "0.02")))
     max_hold_minutes: float = field(default_factory=lambda: float(_optional("MAX_HOLD_MINUTES", "375")))  # ~one NSE trading day
+    brokerage_per_order_inr: float = field(default_factory=lambda: float(_optional("BROKERAGE_PER_ORDER_INR", "5.0")))
+    # Portfolio-level risk -- caps across ALL open positions at once, not just one order.
+    max_concurrent_positions: int = field(default_factory=lambda: int(_optional("MAX_CONCURRENT_POSITIONS", "3")))
+    max_deployed_capital_pct: float = field(default_factory=lambda: float(_optional("MAX_DEPLOYED_CAPITAL_PCT", "0.10")))
 
 
 @dataclass(frozen=True)

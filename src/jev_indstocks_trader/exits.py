@@ -18,6 +18,7 @@ import time
 from typing import Optional
 
 from .audit import AuditTrail
+from .costs import CostRates, compute_round_trip_cost
 from .execution_gateway import ExecutionGateway
 from .positions import Position, PositionStore
 
@@ -49,6 +50,7 @@ class ExitManager:
         max_hold_minutes: float,
         notifier=None,  # TelegramAlertNotifier, optional -- kept loosely typed to avoid a hard import cycle
         paper_trading: bool = True,
+        cost_rates: CostRates = CostRates(),
     ):
         self.gateway = gateway
         self.store = store
@@ -56,6 +58,7 @@ class ExitManager:
         self.max_hold_seconds = max_hold_minutes * 60
         self.notifier = notifier
         self.paper_trading = paper_trading
+        self.cost_rates = cost_rates
 
     def check_and_exit_all(self) -> None:
         for position in self.store.list_open():
@@ -103,11 +106,24 @@ class ExitManager:
             return
 
         realized_pnl = (live_ltp - position.entry_price) * position.qty
-        self.audit.update_outcome(position.decision_id, fill_price=live_ltp, realized_pnl=realized_pnl)
+        cost = compute_round_trip_cost(
+            buy_price=position.entry_price, sell_price=live_ltp, qty=position.qty,
+            product=position.product, rates=self.cost_rates,
+        )
+        net = realized_pnl - cost.total
+        self.audit.update_outcome(
+            position.decision_id, fill_price=live_ltp, realized_pnl=realized_pnl,
+            net_pnl=net, costs={
+                "brokerage": cost.brokerage, "stt": cost.stt, "exchange_txn": cost.exchange_txn,
+                "sebi_turnover": cost.sebi_turnover, "stamp_duty": cost.stamp_duty, "gst": cost.gst,
+                "total": cost.total,
+            },
+        )
         self.store.remove(position.security_id)
 
         if self.notifier is not None:
             self.notifier.send_info(
                 f"Exited {position.security_id} ({reason}): entry {position.entry_price:.2f} -> "
-                f"{live_ltp:.2f}, qty {position.qty}, P&L \u20b9{realized_pnl:.2f}"
+                f"{live_ltp:.2f}, qty {position.qty}, gross \u20b9{realized_pnl:.2f}, "
+                f"costs \u20b9{cost.total:.2f}, net \u20b9{net:.2f}"
             )
