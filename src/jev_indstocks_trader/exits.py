@@ -5,11 +5,10 @@ rules. ExitManager.check_and_exit_all() should run every loop tick,
 before any new entries are considered -- closing existing risk takes
 priority over opening new risk.
 
-Exit orders are LIMIT orders at the current LTP, consistent with the
-"no MARKET orders" price-collar policy elsewhere in the risk framework
-(see docs/ARCHITECTURE.md section 4). The one deliberate exception is
-RiskGovernor.flatten_all(), which uses MARKET orders because the kill
-switch's job is guaranteed exit, not price control.
+Stop-loss and time-based exits use MARKET orders so a gap through the
+stop cannot leave a resting LIMIT unfilled while the local store marks
+the position closed. Target exits stay LIMIT at LTP. Kill-switch
+flatten remains MARKET.
 """
 from __future__ import annotations
 
@@ -89,15 +88,25 @@ class ExitManager:
         )
         try:
             if not self.paper_trading:
-                self.gateway.place_limit_order(
-                    security_id=position.security_id,
-                    side="SELL",
-                    qty=position.qty,
-                    price=live_ltp,
-                    exchange=position.exchange,
-                    segment=position.segment,
-                    product=position.product,
-                )
+                if reason in ("stop_loss", "time_exit"):
+                    self.gateway.place_market_order(
+                        security_id=position.security_id,
+                        side="SELL",
+                        qty=position.qty,
+                        exchange=position.exchange,
+                        segment=position.segment,
+                        product=position.product,
+                    )
+                else:
+                    self.gateway.place_limit_order(
+                        security_id=position.security_id,
+                        side="SELL",
+                        qty=position.qty,
+                        price=live_ltp,
+                        exchange=position.exchange,
+                        segment=position.segment,
+                        product=position.product,
+                    )
         except Exception:
             logger.exception(
                 "Exit order FAILED for %s (%s) -- position remains open, will retry next tick",

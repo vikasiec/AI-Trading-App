@@ -47,7 +47,7 @@ src/jev_indstocks_trader/
 scripts/
   refresh_token.py      cron entrypoint -- the ONE process allowed to refresh the token
   run_calibration_report.py  CLI: prints the Jev calibration report
-tests/                   pytest suite (79 tests) covering risk governor, portfolio risk, costs, auth, exits, GTT, reconciliation, watchlist, retry, news/ticks, calibration, historical data, backtesting, and Telegram auth checks
+tests/                   pytest suite (86 tests) covering risk governor, portfolio risk, costs, auth, exits, GTT, reconciliation, watchlist, retry, news/ticks, calibration, historical data, backtesting, Telegram auth/polling, and main._tick collar/idempotency paths
 docs/ARCHITECTURE.md     full design doc + Mermaid architecture diagram
 docs/INTELLIGENCE_ROADMAP.md  data / hypotheses / algorithms backlog for the trading intelligence itself
 FEATURES.md               living feature list, roadmap, and changelog

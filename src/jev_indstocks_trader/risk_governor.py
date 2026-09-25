@@ -40,8 +40,19 @@ class RiskGovernor:
 
     # -- idempotency -----------------------------------------------------
 
+    @staticmethod
+    def window_key(security_id: str, ts: float | None = None) -> str:
+        """Same key the live loop and the startup rebuild must both use."""
+        minute = int((ts if ts is not None else time.time()) // 60)
+        return f"{security_id}_{minute}"
+
     def _load_idempotency_state(self) -> set:
-        """Rebuild from the broker's own order book on startup."""
+        """Rebuild from the broker's own order book on startup.
+
+        Keys are `{security_id}_{epoch_minute}` — the same shape
+        `mark_executed` writes. Older code used `{name}_{window}`, which
+        never matched a live key and made the rebuild a no-op.
+        """
         try:
             resp = requests.get(
                 f"{self.cfg.base_url}/order-book",
@@ -49,9 +60,19 @@ class RiskGovernor:
                 timeout=10,
             )
             resp.raise_for_status()
-            keys = set()
+            keys: set[str] = set()
+            now = time.time()
             for order in resp.json().get("data", []):
-                keys.add(f"{order.get('name')}_{order.get('window', '')}")
+                sid = order.get("security_id") or order.get("name")
+                if not sid:
+                    continue
+                ts = order.get("order_epoch") or order.get("timestamp")
+                if isinstance(ts, (int, float)) and ts > 0:
+                    if ts > 1e12:
+                        ts = ts / 1000.0
+                    keys.add(self.window_key(str(sid), float(ts)))
+                else:
+                    keys.add(self.window_key(str(sid), now))
             logger.info("Idempotency state rebuilt: %d prior orders loaded", len(keys))
             return keys
         except requests.RequestException:
@@ -64,8 +85,16 @@ class RiskGovernor:
         resp = requests.get(f"{self.cfg.base_url}/funds", headers=self.auth_headers_fn(), timeout=10)
         resp.raise_for_status()
         d = resp.json()["data"]
-        equity = d.get("sod_balance") or 1.0
-        pnl_today = d.get("realized_pnl", 0.0) + d.get("unrealized_pnl", 0.0)
+        equity = (
+            d.get("available_balance")
+            or d.get("net_balance")
+            or d.get("sod_balance")
+            or 0.0
+        )
+        if equity <= 0:
+            logger.error("Funds payload has no usable equity field; treating drawdown as blocking")
+            return 1.0
+        pnl_today = float(d.get("realized_pnl", 0.0) or 0.0) + float(d.get("unrealized_pnl", 0.0) or 0.0)
         return max(0.0, -pnl_today / equity)
 
     # -- validation ----------------------------------------------------------
@@ -93,12 +122,18 @@ class RiskGovernor:
         if slippage_pct > self.risk_cfg.max_slippage_pct:
             return False, f"slippage_{slippage_pct:.4f}_exceeds_collar"
 
-        window_key = f"{security_id}_{int(time.time() // 60)}"
+        window_key = self.window_key(security_id)
         if window_key in self.executed_keys:
             return False, "duplicate_in_window"
 
-        self.executed_keys.add(window_key)
+        # Do NOT reserve the slot here. Sizing, portfolio caps, or
+        # place_order can still fail; claiming the key early would lock
+        # the symbol out for the rest of the minute after a no-op.
         return True, "approved"
+
+    def mark_executed(self, security_id: str) -> None:
+        """Call only after a paper fill is booked or a live order is ACK'd."""
+        self.executed_keys.add(self.window_key(security_id))
 
     # -- sizing ----------------------------------------------------------
 
@@ -121,23 +156,31 @@ class RiskGovernor:
         logger.critical("KILL SWITCH TRIGGERED -- flattening all orders and positions")
 
         try:
-            orders = requests.get(f"{self.cfg.base_url}/order-book", headers=headers, timeout=10).json()
-            for order in orders.get("data", []):
-                if order.get("status") in ("O-PENDING", "OPEN"):
-                    requests.delete(
-                        f"{self.cfg.base_url}/order/{order['id']}", headers=headers, timeout=10
-                    )
+            book = requests.get(f"{self.cfg.base_url}/order-book", headers=headers, timeout=10)
+            book.raise_for_status()
+            for order in book.json().get("data", []):
+                if order.get("status") not in ("O-PENDING", "OPEN", "PENDING", "TRIGGER_PENDING"):
+                    continue
+                oid = order.get("id") or order.get("order_id")
+                if not oid:
+                    continue
+                resp = requests.delete(
+                    f"{self.cfg.base_url}/order/{oid}", headers=headers, timeout=10
+                )
+                if resp.status_code >= 400:
+                    logger.error("Kill-switch cancel failed for order %s: %s", oid, resp.text)
         except requests.RequestException:
             logger.exception("Error cancelling open orders during kill switch")
 
         try:
-            positions = requests.get(f"{self.cfg.base_url}/positions", headers=headers, timeout=10).json()
-            for pos in positions.get("data", []):
+            pos_resp = requests.get(f"{self.cfg.base_url}/positions", headers=headers, timeout=10)
+            pos_resp.raise_for_status()
+            for pos in pos_resp.json().get("data", []):
                 net_qty = pos.get("net_qty", 0)
                 if net_qty == 0:
                     continue
                 side = "SELL" if net_qty > 0 else "BUY"
-                requests.post(
+                resp = requests.post(
                     f"{self.cfg.base_url}/order",
                     headers=headers,
                     json={
@@ -154,5 +197,10 @@ class RiskGovernor:
                     },
                     timeout=10,
                 )
+                if resp.status_code >= 400:
+                    logger.error(
+                        "Kill-switch flatten failed for %s: %s",
+                        pos.get("security_id"), resp.text,
+                    )
         except requests.RequestException:
             logger.exception("Error squaring off positions during kill switch")

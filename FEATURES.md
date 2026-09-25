@@ -336,6 +336,28 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 
 ## Changelog
 
+### 2026-09-26 (v8)
+- **P0 loop fixes from code review.** The README described a working
+  risk system; `main.py` was bypassing two of the controls it advertised.
+- Telegram `/halt` `/flatten` now actually listen: `start_background_polling()`
+  runs a daemon thread from `run_loop()`. Kill switch also cancels local
+  GTTs and clears `PositionStore` (paper mode skips the broker flatten).
+- Price collar is real: LTP is snapshotted *before* Jev, refreshed after,
+  and both prices are passed into `validate_trade`.
+- Idempotency key is `{security_id}_{epoch_minute}` on both write and
+  order-book rebuild. The slot is reserved only via `mark_executed()`
+  after a paper book or a live ACK — a failed `place_order` no longer
+  locks the symbol for the rest of the minute.
+- Stop-loss and time exits place MARKET orders; target stays LIMIT.
+- Paper mode still tracks local positions (exits need them) but
+  **skips broker reconciliation** so paper ghosts don't page you.
+- Quote helper surfaces day-change / volume to Jev when the LTP payload
+  includes them, instead of hardcoding `0`.
+- Funds/equity prefers `available_balance` / `net_balance` over SOD;
+  missing equity blocks new risk instead of dividing by ₹1.
+- New `_tick` tests lock the collar, paper-vs-live path, and
+  failed-order-does-not-mark-executed behaviour. Suite: 86 passing.
+
 ### 2026-09-25 (v7)
 - **`gtt_orders.py`**: exchange-side OCO GTT bracket orders (stop-loss +
   target, whichever fires first cancels the other), placed alongside every

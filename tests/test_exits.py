@@ -87,10 +87,29 @@ def test_live_mode_exit_places_sell_order(tmp_path, mocker):
     )
     manager.check_and_exit_all()
 
-    gateway.place_limit_order.assert_called_once()
-    kwargs = gateway.place_limit_order.call_args.kwargs
+    gateway.place_market_order.assert_called_once()
+    kwargs = gateway.place_market_order.call_args.kwargs
     assert kwargs["side"] == "SELL"
     assert kwargs["qty"] == 10
+    gateway.place_limit_order.assert_not_called()
+    assert store.list_open() == []
+
+
+def test_live_mode_target_exit_places_limit_order(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position())
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2500.0  # hits target
+    audit = mocker.Mock()
+
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=False
+    )
+    manager.check_and_exit_all()
+
+    gateway.place_limit_order.assert_called_once()
+    gateway.place_market_order.assert_not_called()
     assert store.list_open() == []
 
 
@@ -100,7 +119,7 @@ def test_failed_exit_order_keeps_position_open(tmp_path, mocker):
 
     gateway = mocker.Mock()
     gateway.get_ltp.return_value = 2420.0
-    gateway.place_limit_order.side_effect = RuntimeError("network error")
+    gateway.place_market_order.side_effect = RuntimeError("network error")
     audit = mocker.Mock()
     notifier = mocker.Mock()
 

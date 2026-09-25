@@ -7,7 +7,8 @@ existence to strangers who find the bot username.
 from __future__ import annotations
 
 import logging
-from typing import Callable
+import threading
+from typing import Callable, Optional
 
 import telebot
 
@@ -21,6 +22,7 @@ class TelegramAlertNotifier:
         self.cfg = cfg
         self.bot = telebot.TeleBot(cfg.bot_token)
         self.kill_switch_callback = kill_switch_callback
+        self._poll_thread: Optional[threading.Thread] = None
 
         @self.bot.message_handler(commands=["halt", "flatten"])
         def handle_emergency(message):
@@ -45,4 +47,23 @@ class TelegramAlertNotifier:
 
     def start_polling(self) -> None:
         """Blocking call -- run this in its own process/thread."""
-        self.bot.infinity_polling()
+        self.bot.infinity_polling(skip_pending=True)
+
+    def start_background_polling(self) -> threading.Thread:
+        """Daemon thread so /halt and /flatten actually work in the trading process.
+
+        Outbound send_* still works without this; inbound commands do not.
+        """
+        if self._poll_thread is not None and self._poll_thread.is_alive():
+            return self._poll_thread
+
+        def _run():
+            try:
+                logger.info("Telegram inbound polling started")
+                self.bot.infinity_polling(skip_pending=True)
+            except Exception:
+                logger.exception("Telegram polling thread died -- remote kill switch is offline")
+
+        self._poll_thread = threading.Thread(target=_run, name="telegram-poll", daemon=True)
+        self._poll_thread.start()
+        return self._poll_thread

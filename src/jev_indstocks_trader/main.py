@@ -58,7 +58,24 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     instruments = InstrumentsMaster(cfg.indstocks, auth_headers_fn)
     audit = AuditTrail(cfg.audit_log_path)
     position_store = PositionStore(cfg.positions_store_path)
-    notifier = TelegramAlertNotifier(cfg.telegram, kill_switch_callback=governor.flatten_all)
+    def _kill_switch() -> None:
+        """Broker flatten + cancel local GTTs + clear the local store."""
+        if not cfg.risk.paper_trading:
+            governor.flatten_all()
+        for pos in list(position_store.list_open()):
+            if pos.gtt_id and not cfg.risk.paper_trading:
+                try:
+                    gtt_orders.cancel_gtt(cfg.indstocks, auth_headers_fn, pos.gtt_id)
+                except Exception:
+                    logger.exception("Kill switch could not cancel GTT %s", pos.gtt_id)
+            position_store.remove(pos.security_id)
+        try:
+            notifier.send_critical_alert("Kill switch completed: flatten + local store cleared")
+        except Exception:
+            logger.exception("Could not send kill-switch confirmation")
+
+    notifier = TelegramAlertNotifier(cfg.telegram, kill_switch_callback=_kill_switch)
+    notifier.start_background_polling()
     exit_manager = ExitManager(
         gateway=gateway,
         store=position_store,
@@ -103,7 +120,7 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     logger.info("Trading loop starting. Ctrl+C to stop.")
     try:
         while True:
-            if reconciler.due():
+            if not cfg.risk.paper_trading and reconciler.due():
                 reconciler.reconcile()
             exit_manager.check_and_exit_all()
             _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
@@ -116,13 +133,13 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
             ws_feed.stop()
 
 
-def _get_ltp(gateway: ExecutionGateway, tick_cache: LiveTickCache, scrip_code: str) -> float:
-    """WebSocket tick if fresh, else a retried REST poll."""
+def _get_quote(gateway: ExecutionGateway, tick_cache: LiveTickCache, scrip_code: str) -> dict:
+    """WebSocket tick if fresh, else a retried REST quote (ltp/change/vol)."""
     live = tick_cache.get_fresh(scrip_code)
     if live is not None:
-        return live
+        return {"ltp": live, "day_change_pct": 0.0, "volume": 0}
     return retry_with_backoff(
-        lambda: gateway.get_ltp(scrip_code), max_retries=3, base_delay_s=0.5,
+        lambda: gateway.get_quote(scrip_code), max_retries=3, base_delay_s=0.5,
     )
 
 
@@ -148,13 +165,20 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
         scrip_code = instrument.get("scrip_code") or f"NSE_{security_id}"
 
         try:
-            ltp = _get_ltp(gateway, tick_cache, scrip_code)
+            quote = _get_quote(gateway, tick_cache, scrip_code)
         except Exception:
-            logger.exception("Could not get LTP for %s after retries, skipping this tick", symbol)
+            logger.exception("Could not get quote for %s after retries, skipping this tick", symbol)
             continue
 
+        scored_at_price = quote["ltp"]
         headlines = news_source.headlines_for(symbol, instrument.get("name")) if news_source else []
-        snapshot = MarketSnapshot(symbol=symbol, ltp=ltp, day_change_pct=0.0, volume=0, headlines=headlines)
+        snapshot = MarketSnapshot(
+            symbol=symbol,
+            ltp=scored_at_price,
+            day_change_pct=quote.get("day_change_pct") or 0.0,
+            volume=quote.get("volume") or 0,
+            headlines=headlines,
+        )
         context = build_context(snapshot)
 
         t0 = time.monotonic()
@@ -165,10 +189,17 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             continue
         latency_ms = (time.monotonic() - t0) * 1000
 
+        try:
+            live_quote = _get_quote(gateway, tick_cache, scrip_code)
+            live_ltp = live_quote["ltp"]
+        except Exception:
+            logger.exception("Could not refresh LTP for %s after Jev, skipping", symbol)
+            continue
+
         approved, reason = governor.validate_trade(
             security_id=security_id,
-            live_ltp=ltp,
-            scored_at_price=ltp,
+            live_ltp=live_ltp,
+            scored_at_price=scored_at_price,
             conviction=result.score,
             confidence=result.confidence,
         )
@@ -178,11 +209,11 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
         qty = 0
         if approved:
             funds = gateway.get_funds()
-            equity = funds.get("sod_balance", 0.0)
-            qty = governor.size_order(equity, ltp)
+            equity = gateway.equity_from_funds(funds)
+            qty = governor.size_order(equity, live_ltp)
             if qty > 0:
                 portfolio_check = check_portfolio_risk(
-                    position_store, cfg.risk, equity=equity, candidate_capital=qty * ltp,
+                    position_store, cfg.risk, equity=equity, candidate_capital=qty * live_ltp,
                 )
                 if not portfolio_check.approved:
                     logger.debug("Portfolio risk blocked %s: %s", symbol, portfolio_check.reason)
@@ -190,12 +221,21 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                     reason = portfolio_check.reason
                     approved = False
                 elif not cfg.risk.paper_trading:
-                    order = gateway.place_limit_order(security_id, "BUY", qty, ltp)
-                    order_id = order.get("data", {}).get("order_id")
-                    action = "BUY"
-                    notifier.send_info(f"BUY {symbol} x{qty} @ ~{ltp} (order {order_id})")
+                    try:
+                        order = gateway.place_limit_order(security_id, "BUY", qty, live_ltp)
+                        order_id = order.get("data", {}).get("order_id")
+                        action = "BUY"
+                        governor.mark_executed(security_id)
+                        notifier.send_info(f"BUY {symbol} x{qty} @ ~{live_ltp} (order {order_id})")
+                    except Exception:
+                        logger.exception("Order placement failed for %s -- not marking executed", symbol)
+                        approved = False
+                        qty = 0
+                        action = "SKIP"
+                        reason = "order_placement_failed"
                 else:
                     action = "BUY (paper)"
+                    governor.mark_executed(security_id)
 
         decision_id = audit.log_decision(
             security_id=security_id,
@@ -203,14 +243,14 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             jev_confidence=result.confidence,
             action=action,
             latency_ms=latency_ms,
-            otr_check="PASS",
+            otr_check="PASS" if approved else "SKIP",
             order_id=order_id,
             had_news=(len(headlines) > 0) if news_source is not None else None,
         )
 
         if approved and qty > 0:
-            stop_loss_price = ltp * (1 - cfg.risk.stop_loss_pct)
-            target_price = ltp * (1 + cfg.risk.target_pct)
+            stop_loss_price = live_ltp * (1 - cfg.risk.stop_loss_pct)
+            target_price = live_ltp * (1 + cfg.risk.target_pct)
 
             gtt_id = None
             if cfg.risk.gtt_enabled and not cfg.risk.paper_trading:
@@ -235,7 +275,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                 segment=instrument.get("segment", "EQUITY"),
                 product="INTRADAY",
                 qty=qty,
-                entry_price=ltp,
+                entry_price=live_ltp,
                 stop_loss_price=stop_loss_price,
                 target_price=target_price,
                 opened_at=time.time(),

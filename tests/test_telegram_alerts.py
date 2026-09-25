@@ -39,3 +39,20 @@ def test_authorized_chat_triggers_kill_switch(mocker):
     handle_emergency(owner_message)
 
     kill_switch.assert_called_once()
+
+
+def test_start_background_polling_starts_daemon_thread(mocker):
+    mocker.patch("jev_indstocks_trader.telegram_alerts.telebot.TeleBot")
+    mocker.patch(
+        "jev_indstocks_trader.telegram_alerts.TelegramAlertNotifier.start_polling",
+        autospec=False,
+    )
+    # Don't actually block on infinity_polling
+    cfg = load_config()
+    notifier = TelegramAlertNotifier(cfg.telegram, kill_switch_callback=lambda: None)
+    notifier.bot.infinity_polling.side_effect = lambda **kw: None
+    thread = notifier.start_background_polling()
+    thread.join(timeout=2)
+    assert thread.daemon is True
+    assert thread.name == "telegram-poll"
+    notifier.bot.infinity_polling.assert_called()

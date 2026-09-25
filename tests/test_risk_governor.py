@@ -34,9 +34,9 @@ def test_round_to_tick():
 
 
 def test_idempotency_rebuilds_from_order_book(mocker):
-    order_book = {"data": [{"name": "RELIANCE", "window": "12345"}]}
+    order_book = {"data": [{"security_id": "2885", "order_epoch": 1_700_000_000}]}
     gov, _ = make_governor(mocker, order_book=order_book)
-    assert "RELIANCE_12345" in gov.executed_keys
+    assert "2885_28333333" in gov.executed_keys  # 1700000000 // 60
 
 
 def test_drawdown_blocks_trade_and_triggers_flatten(mocker):
@@ -82,9 +82,14 @@ def test_duplicate_order_in_same_window_rejected(mocker):
     gov, _ = make_governor(mocker, funds=funds)
 
     first = gov.validate_trade("2885", 2450, 2450, 0.9, 0.9)
+    # Approval alone must not burn the slot — a later failed place_order
+    # should still be allowed to retry in the same minute.
+    retry_before_mark = gov.validate_trade("2885", 2450, 2450, 0.9, 0.9)
+    gov.mark_executed("2885")
     second = gov.validate_trade("2885", 2450, 2450, 0.9, 0.9)
 
     assert first[0] is True
+    assert retry_before_mark[0] is True
     assert second == (False, "duplicate_in_window")
 
 
