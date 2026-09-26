@@ -387,6 +387,15 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 
 ## Changelog
 
+### 2026-09-26 (v13)
+- Confirmed against live INDstocks docs: instruments `?source=equity` + official
+  CSV columns; cancel is `POST /order/cancel` (not DELETE); fill statuses include
+  SUCCESS / PARTIALLY FILLED; book fields `id`, `traded_qty`, `traded_price`.
+- NSE session gate: entries 09:15–15:15 IST weekdays; 15:15 flatten via
+  ExitManager + broker flatten; idle when closed. `RESPECT_SESSION=false` to disable.
+- Lot-size snap in `size_order`. WebSocket default URL + subscribe shape
+  (`NSE:TOKEN`) from api-docs.indstocks.com/Websockets/.
+
 ### 2026-09-26 (v12)
 - Partial fills: `wait_for_fill` returns PARTIAL when filled_qty < requested.
   Entry books only filled qty and cancels the residual. Exit reduces store

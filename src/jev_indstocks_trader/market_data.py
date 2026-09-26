@@ -100,7 +100,9 @@ class INDstocksWebSocketFeed:
         ) as ws:
             # TODO: confirm the real subscribe message shape against
             # api-docs.indstocks.com/Websockets/ before relying on this.
-            ws.send(json.dumps({"action": "subscribe", "scrip_codes": self.scrip_codes}))
+            # Confirmed api-docs.indstocks.com/Websockets/: NSE:2885 not NSE_2885
+            instruments = [c.replace("_", ":", 1) if "_" in c else c for c in self.scrip_codes]
+            ws.send(json.dumps({"action": "subscribe", "mode": "ltp", "instruments": instruments}))
             logger.info("WebSocket feed connected, subscribed to %d symbols", len(self.scrip_codes))
 
             while not self._stop.is_set():
@@ -112,9 +114,9 @@ class INDstocksWebSocketFeed:
             msg = json.loads(raw)
             # TODO: confirm the real tick message shape -- assumed here to
             # mirror the REST /market/quotes/full response's field names.
-            scrip_code = msg.get("scrip_code")
-            ltp = msg.get("live_price")
+            scrip_code = msg.get("scrip_code") or msg.get("instrument") or msg.get("token")
+            ltp = msg.get("live_price") or msg.get("ltp") or msg.get("LTP")
             if scrip_code and ltp is not None:
-                self.cache.update(scrip_code, float(ltp))
+                self.cache.update(str(scrip_code).replace(":", "_"), float(ltp))
         except (json.JSONDecodeError, TypeError, ValueError):
             logger.warning("Could not parse WebSocket tick message: %r", raw[:200])

@@ -102,3 +102,9 @@ def test_size_order_respects_both_caps(mocker):
     # small equity: 2% of equity binds instead
     qty_small = gov.size_order(equity=10_000, price=100)
     assert qty_small == 2  # 2% of 10,000 = 200 / 100
+
+
+def test_size_order_snaps_to_lot(mocker):
+    gov, _ = make_governor(mocker, funds={"data": {}})
+    assert gov.size_order(equity=1_000_000, price=100, lot_size=15) % 15 == 0
+    assert gov.size_order(equity=1_000, price=100, lot_size=15) == 0

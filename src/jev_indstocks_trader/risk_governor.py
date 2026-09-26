@@ -137,14 +137,16 @@ class RiskGovernor:
 
     # -- sizing ----------------------------------------------------------
 
-    def size_order(self, equity: float, price: float) -> int:
+    def size_order(self, equity: float, price: float, lot_size: int = 1) -> int:
         capital = min(
             self.risk_cfg.max_position_capital_inr,
             self.risk_cfg.max_position_pct_equity * equity,
         )
         if price <= 0:
             return 0
-        return max(0, int(capital // price))
+        raw = int(capital // price)
+        lot = max(1, int(lot_size or 1))
+        return max(0, (raw // lot) * lot)
 
     # -- kill switch ----------------------------------------------------------
 

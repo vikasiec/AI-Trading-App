@@ -70,13 +70,15 @@ def test_wait_for_fill_not_found_when_order_never_appears(mocker):
     assert result.raw is None
 
 
-def test_cancel_order_calls_delete(mocker):
+def test_cancel_order_posts_to_order_cancel(mocker):
     gw = make_gateway(mocker)
     resp = mocker.Mock(status_code=200)
-    delete_mock = mocker.patch("jev_indstocks_trader.execution_gateway.requests.delete", return_value=resp)
+    post_mock = mocker.patch("jev_indstocks_trader.execution_gateway.requests.post", return_value=resp)
     gw.cancel_order("OID1")
-    delete_mock.assert_called_once()
-    assert "OID1" in delete_mock.call_args.args[0]
+    post_mock.assert_called_once()
+    assert post_mock.call_args.args[0].endswith("/order/cancel")
+    assert post_mock.call_args.kwargs["json"]["order_id"] == "OID1"
+    assert post_mock.call_args.kwargs["json"]["segment"] == "EQUITY"
 
 
 def test_extract_order_id_from_common_shapes():

@@ -25,6 +25,7 @@ from . import auth
 from .audit import AuditTrail
 from .config import load_config, validate_config
 from .health import build_payload, start_health_server
+from .session import now_ist, session_phase
 from .slog import configure_logging
 from .costs import CostRates
 from .execution_gateway import ExecutionGateway, extract_order_id
@@ -137,8 +138,28 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
         logger.exception("Could not bind healthz on %s:%s", cfg.health_host, cfg.health_port)
 
     logger.info("Trading loop starting. Ctrl+C to stop.")
+    flattened_on: str | None = None
     try:
         while True:
+            phase = session_phase() if cfg.respect_session else "open"
+            today = now_ist().date().isoformat()
+            if phase == "closed":
+                logger.debug("Market closed (%s IST) — idle", now_ist().strftime("%H:%M"))
+                time.sleep(max(poll_interval_s, 15.0))
+                continue
+            if phase == "flatten":
+                if flattened_on != today:
+                    logger.warning("Session flatten window — closing all open positions")
+                    exit_manager.force_exit_all("session_close")
+                    if not cfg.risk.paper_trading:
+                        try:
+                            governor.flatten_all()
+                        except Exception:
+                            logger.exception("Broker flatten after session close failed")
+                    notifier.send_critical_alert(f"Session flatten completed ({today})")
+                    flattened_on = today
+                time.sleep(max(poll_interval_s, 5.0))
+                continue
             if not cfg.risk.paper_trading and reconciler.due():
                 reconciler.reconcile()
             exit_manager.check_and_exit_all()
@@ -230,7 +251,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
         if approved:
             funds = gateway.get_funds()
             equity = gateway.equity_from_funds(funds)
-            qty = governor.size_order(equity, live_ltp)
+            qty = governor.size_order(equity, live_ltp, lot_size=int(instrument.get("lot_size") or 1))
             if qty > 0:
                 portfolio_check = check_portfolio_risk(
                     position_store, cfg.risk, equity=equity,

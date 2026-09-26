@@ -34,9 +34,10 @@ from .risk_governor import round_to_tick
 
 logger = logging.getLogger(__name__)
 
-FILLED_STATUSES = {"COMPLETE", "FILLED", "EXECUTED", "TRADED"}
-REJECTED_STATUSES = {"REJECTED", "FAILED", "EXPIRED"}
-CANCELLED_STATUSES = {"CANCELLED", "CANCELED"}
+FILLED_STATUSES = {"COMPLETE", "FILLED", "EXECUTED", "TRADED", "SUCCESS"}
+PARTIAL_STATUSES = {"PARTIALLY FILLED", "PARTIAL", "PF"}
+REJECTED_STATUSES = {"REJECTED", "FAILED", "EXPIRED", "ABORTED", "RJ"}
+CANCELLED_STATUSES = {"CANCELLED", "CANCELED", "PARTIALLY FILLED - CANCELLED", "PARTIALLY FILLED - EXPIRED", "PFC"}
 ORDER_ID_KEYS = ("order_id", "id", "oms_order_id", "orderId")
 FILLED_QTY_KEYS = ("filled_qty", "traded_qty", "filledQty", "tradedQty", "filled_quantity")
 
@@ -70,7 +71,7 @@ def _filled_qty(order: dict) -> Optional[int]:
 
 
 def _avg_price(order: dict) -> Optional[float]:
-    for key in ("avg_price", "average_price", "avgPrice", "averagePrice"):
+    for key in ("avg_price", "average_price", "avgPrice", "averagePrice", "traded_price"):
         val = order.get(key)
         if val not in (None, ""):
             try:
@@ -232,10 +233,14 @@ class ExecutionGateway:
                 return order
         return None
 
-    def cancel_order(self, order_id: str) -> None:
-        """Best-effort cancel. Callers should not assume this always succeeds."""
-        resp = requests.delete(
-            f"{self.cfg.base_url}/order/{order_id}", headers=self.auth_headers_fn(), timeout=10
+    def cancel_order(self, order_id: str, segment: str = "EQUITY") -> None:
+        """POST /order/cancel — confirmed api-docs.indstocks.com/normal_orders/."""
+        body_segment = "DERIVATIVE" if str(segment).upper() in ("FNO", "DERIVATIVE", "NFO") else "EQUITY"
+        resp = requests.post(
+            f"{self.cfg.base_url}/order/cancel",
+            headers=self.auth_headers_fn(),
+            json={"order_id": order_id, "segment": body_segment},
+            timeout=10,
         )
         if resp.status_code >= 400:
             logger.error("Order cancellation failed for %s: %s", order_id, resp.text)
@@ -267,11 +272,13 @@ class ExecutionGateway:
                 logger.info("wait_for_fill order=%s raw_status=%s", order_id, status)
                 filled = _filled_qty(order)
                 avg = _avg_price(order)
-                if status in FILLED_STATUSES:
+                if status in FILLED_STATUSES or status in PARTIAL_STATUSES:
                     if filled is None or filled <= 0:
-                        # Broker said COMPLETE but gave us no fill size — do not guess.
+                        # Broker said SUCCESS/COMPLETE but gave us no fill size — do not guess.
                         return FillResult(status="TIMEOUT", filled_qty=0, avg_price=avg, raw=order)
-                    if requested_qty is not None and filled < requested_qty:
+                    if status in PARTIAL_STATUSES or (
+                        requested_qty is not None and filled < requested_qty
+                    ):
                         return FillResult(status="PARTIAL", filled_qty=filled, avg_price=avg, raw=order)
                     return FillResult(status="FILLED", filled_qty=filled, avg_price=avg, raw=order)
                 if status in REJECTED_STATUSES:

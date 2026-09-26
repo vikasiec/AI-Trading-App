@@ -68,6 +68,16 @@ class ExitManager:
         for position in self.store.list_open():
             self._check_one(position)
 
+    def force_exit_all(self, reason: str = "session_close") -> None:
+        """Square every local position (pre-close flatten)."""
+        for position in list(self.store.list_open()):
+            try:
+                live_ltp = self.gateway.get_ltp(position.scrip_code)
+            except Exception:
+                live_ltp = position.entry_price
+                logger.exception("No LTP for forced exit %s — using entry", position.security_id)
+            self._execute_exit(position, live_ltp, reason)
+
     def _check_one(self, position: Position) -> None:
         try:
             live_ltp = self.gateway.get_ltp(position.scrip_code)
