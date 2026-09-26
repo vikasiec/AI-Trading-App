@@ -23,6 +23,15 @@ def test_json_formatter_emits_level_and_msg():
     assert data["logger"] == "t"
 
 
+def test_non_loopback_health_requires_token():
+    from jev_indstocks_trader.health import start_health_server
+    try:
+        start_health_server(lambda: {"ok": True}, host="0.0.0.0", port=0, token="")
+        assert False, "should have refused"
+    except RuntimeError:
+        pass
+
+
 def test_configure_logging_json_mode_does_not_raise():
     configure_logging(json_mode=True)
     logging.getLogger("t").info("ok")

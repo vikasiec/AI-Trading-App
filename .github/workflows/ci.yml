@@ -14,5 +14,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Reject tracked secrets
+        run: |
+          set -e
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+            echo ".env must not be tracked" && exit 1
+          fi
+          if git grep -E 'github_pat_[A-Za-z0-9_]+|INDSTOCKS_MPIN=.+' -- ':!.env.example' ':!docs/*' ':!FEATURES.md' ':!README.md'; then
+            echo "Possible secret in tree" && exit 1
+          fi
       - run: pip install -e . -r requirements.txt
       - run: python -m pytest tests/ -v

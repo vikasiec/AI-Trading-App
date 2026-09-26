@@ -92,10 +92,10 @@ class RiskGovernor:
             or 0.0
         )
         if equity <= 0:
-            logger.error("Funds payload has no usable equity field; treating drawdown as blocking")
-            return 1.0
+            logger.error("Funds payload has no usable equity field; refusing to flatten on a guess")
+            return None
         pnl_today = float(d.get("realized_pnl", 0.0) or 0.0) + float(d.get("unrealized_pnl", 0.0) or 0.0)
-        return max(0.0, -pnl_today / equity)
+        return max(0.0, -pnl_today / float(equity))
 
     # -- validation ----------------------------------------------------------
 
@@ -108,7 +108,10 @@ class RiskGovernor:
         confidence: float,
     ) -> tuple[bool, str]:
         """Returns (approved, reason). reason is always populated for the audit log."""
-        if self.get_drawdown_pct() >= self.risk_cfg.daily_loss_limit_pct:
+        drawdown = self.get_drawdown_pct()
+        if drawdown is None:
+            return False, "funds_unreadable"
+        if drawdown >= self.risk_cfg.daily_loss_limit_pct:
             self.flatten_all()
             return False, "daily_drawdown_limit_hit"
 

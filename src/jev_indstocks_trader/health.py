@@ -33,13 +33,26 @@ def build_payload(
 
 class _Handler(BaseHTTPRequestHandler):
     payload_fn: Callable[[], dict] = staticmethod(lambda: {"ok": True})
+    required_token: str = ""
+    bind_host: str = "127.0.0.1"
 
     def log_message(self, fmt, *args):
         logger.debug("health %s", fmt % args)
 
+    def _authorized(self) -> bool:
+        loopback = self.bind_host in ("127.0.0.1", "localhost", "::1")
+        if loopback and not self.required_token:
+            return True
+        token = self.headers.get("X-Health-Token", "")
+        return bool(self.required_token) and token == self.required_token
+
     def do_GET(self):
         if self.path.split("?")[0] not in ("/healthz", "/health", "/"):
             self.send_response(404)
+            self.end_headers()
+            return
+        if not self._authorized():
+            self.send_response(401)
             self.end_headers()
             return
         body = json.dumps(self.payload_fn()).encode()
@@ -54,8 +67,15 @@ def start_health_server(
     payload_fn: Callable[[], dict],
     host: str = "127.0.0.1",
     port: int = 8080,
+    token: str = "",
 ) -> ThreadingHTTPServer:
-    handler = type("HealthHandler", (_Handler,), {"payload_fn": staticmethod(payload_fn)})
+    if host not in ("127.0.0.1", "localhost", "::1") and not token:
+        raise RuntimeError("HEALTH_TOKEN is required when HEALTH_HOST is not loopback")
+    handler = type(
+        "HealthHandler",
+        (_Handler,),
+        {"payload_fn": staticmethod(payload_fn), "required_token": token, "bind_host": host},
+    )
     httpd = ThreadingHTTPServer((host, port), handler)
     t = threading.Thread(target=httpd.serve_forever, name="healthz", daemon=True)
     t.start()

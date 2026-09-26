@@ -53,6 +53,18 @@ def test_drawdown_blocks_trade_and_triggers_flatten(mocker):
     flatten_mock.assert_called_once()
 
 
+def test_unreadable_funds_blocks_without_flatten(mocker):
+    funds = {"data": {"realized_pnl": -1}}
+    gov, _ = make_governor(mocker, funds=funds)
+    flatten_mock = mocker.patch.object(gov, "flatten_all")
+    approved, reason = gov.validate_trade(
+        security_id="2885", live_ltp=2450, scored_at_price=2450, conviction=0.9, confidence=0.9
+    )
+    assert approved is False
+    assert reason == "funds_unreadable"
+    flatten_mock.assert_not_called()
+
+
 def test_slippage_collar_rejects_moved_price(mocker):
     funds = {"data": {"sod_balance": 100000, "realized_pnl": 0, "unrealized_pnl": 0}}
     gov, _ = make_governor(mocker, funds=funds)

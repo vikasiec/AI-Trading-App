@@ -387,6 +387,12 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 
 ## Changelog
 
+### 2026-09-26 (v14)
+- Telegram kill: `/halt CONFIRM` plus owner user id; forwards ignored.
+- Unreadable `/funds` blocks entries and does not auto-flatten.
+- Non-loopback healthz requires HEALTH_TOKEN header.
+- CI rejects a tracked `.env` and github personal-access-token strings.
+
 ### 2026-09-26 (v13)
 - Confirmed against live INDstocks docs: instruments `?source=equity` + official
   CSV columns; cancel is `POST /order/cancel` (not DELETE); fill statuses include

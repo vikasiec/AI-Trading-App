@@ -50,6 +50,7 @@ class JevConfig:
 class TelegramConfig:
     bot_token: str = field(default_factory=lambda: _require("TELEGRAM_BOT_TOKEN"))
     owner_chat_id: int = field(default_factory=lambda: int(_require("TELEGRAM_OWNER_CHAT_ID")))
+    owner_user_id: int = field(default_factory=lambda: int(_optional("TELEGRAM_OWNER_USER_ID", _optional("TELEGRAM_OWNER_CHAT_ID", "0"))))
 
 
 @dataclass(frozen=True)
@@ -102,6 +103,7 @@ class AppConfig:
     log_json: bool = field(default_factory=lambda: _optional("LOG_JSON", "false").lower() == "true")
     health_host: str = field(default_factory=lambda: _optional("HEALTH_HOST", "127.0.0.1"))
     health_port: int = field(default_factory=lambda: int(_optional("HEALTH_PORT", "8080")))
+    health_token: str = field(default_factory=lambda: _optional("HEALTH_TOKEN", ""))
 
 
 def validate_config(cfg: AppConfig) -> list[str]:

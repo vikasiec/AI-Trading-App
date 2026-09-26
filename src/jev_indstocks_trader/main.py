@@ -133,6 +133,7 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
             ),
             host=cfg.health_host,
             port=cfg.health_port,
+            token=cfg.health_token,
         )
     except OSError:
         logger.exception("Could not bind healthz on %s:%s", cfg.health_host, cfg.health_port)
