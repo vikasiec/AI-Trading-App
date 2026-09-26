@@ -23,12 +23,15 @@ class MarketSnapshot:
 MAX_CONTEXT_TOKENS_APPROX = 500  # rough budget; Jev call sites should stay well under this
 
 
-def build_context(snapshot: MarketSnapshot) -> str:
+def build_context(snapshot: MarketSnapshot, extra: str = "") -> str:
     headline_block = "\n".join(f"- {h}" for h in snapshot.headlines[:5]) or "- (no recent headlines)"
-    return (
+    body = (
         f"Symbol: {snapshot.symbol}\n"
         f"LTP: {snapshot.ltp}\n"
         f"Day change: {snapshot.day_change_pct:.2f}%\n"
         f"Volume: {snapshot.volume}\n"
         f"Recent headlines:\n{headline_block}"
     )
+    if extra.strip():
+        body = f"{body}\n{extra.strip()}"
+    return body

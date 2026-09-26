@@ -79,6 +79,10 @@ class RiskConfig:
     # exits.py logic. Off by default: see gtt_orders.py's "confirm before
     # enabling" note.
     gtt_enabled: bool = field(default_factory=lambda: _optional("GTT_ENABLED", "false").lower() == "true")
+    # jev | rule | jev_and_rule — default jev keeps current behaviour.
+    entry_mode: str = field(default_factory=lambda: _optional("ENTRY_MODE", "jev").lower())
+    open_skip_minutes: float = field(default_factory=lambda: float(_optional("OPEN_SKIP_MINUTES", "15")))
+    index_scrip: str = field(default_factory=lambda: _optional("INDEX_SCRIP", "NSE_26000"))
 
 
 @dataclass(frozen=True)

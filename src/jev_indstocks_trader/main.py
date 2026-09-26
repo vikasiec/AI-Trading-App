@@ -26,7 +26,11 @@ from .audit import AuditTrail
 from .config import load_config, validate_config
 from .health import build_payload, start_health_server
 from .heartbeat import BrokerHeartbeat
-from .session import now_ist, session_phase
+from .session import minutes_since_open, now_ist, session_phase
+from .bar_cache import BarCache
+from .entry import combine_votes, rule_vote
+from .features import compute_features, features_block
+from .jev_client import ConvictionResult
 from .slog import configure_logging
 from .costs import CostRates
 from .execution_gateway import ExecutionGateway, extract_order_id
@@ -148,8 +152,9 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     except OSError:
         logger.exception("Could not bind healthz on %s:%s", cfg.health_host, cfg.health_port)
 
-    logger.info("Trading loop starting. Ctrl+C to stop.")
+    logger.info("Trading loop starting. Ctrl+C to stop. ENTRY_MODE=%s", cfg.risk.entry_mode)
     flattened_on: str | None = None
+    bar_cache = BarCache()
     try:
         while True:
             if heartbeat.due():
@@ -176,8 +181,12 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
             if not cfg.risk.paper_trading and reconciler.due():
                 reconciler.reconcile()
             exit_manager.check_and_exit_all()
+            mins_open = minutes_since_open()
+            if mins_open is not None and mins_open < cfg.risk.open_skip_minutes:
+                time.sleep(poll_interval_s)
+                continue
             _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
-                  position_store, watchlist, news_source, tick_cache)
+                  position_store, watchlist, news_source, tick_cache, bar_cache)
             time.sleep(poll_interval_s)
     except KeyboardInterrupt:
         logger.info("Shutdown requested, exiting cleanly.")
@@ -197,7 +206,7 @@ def _get_quote(gateway: ExecutionGateway, tick_cache: LiveTickCache, scrip_code:
 
 
 def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
-          position_store, watchlist, news_source, tick_cache) -> None:
+          position_store, watchlist, news_source, tick_cache, bar_cache=None) -> None:
     """One iteration: fetch a snapshot per watchlist symbol, score it, and
     (maybe) open a new position. Exit checks run separately, before this,
     in run_loop() -- closing existing risk always happens before opening
@@ -224,6 +233,11 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             continue
 
         scored_at_price = quote["ltp"]
+        if bar_cache is not None:
+            bar_cache.update(symbol, scored_at_price, int(quote.get("volume") or 0))
+        bars = bar_cache.bars(symbol) if bar_cache is not None else []
+        feat = compute_features(bars)
+        vote = rule_vote(bars, feat)
         headlines = news_source.headlines_for(symbol, instrument.get("name")) if news_source else []
         snapshot = MarketSnapshot(
             symbol=symbol,
@@ -232,15 +246,42 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             volume=quote.get("volume") or 0,
             headlines=headlines,
         )
-        context = build_context(snapshot)
+        context = build_context(snapshot, extra=features_block(feat))
 
-        t0 = time.monotonic()
-        try:
-            result = retry_with_backoff(lambda: evaluator.evaluate_signal(context), max_retries=2, base_delay_s=0.5)
-        except Exception:
-            logger.exception("Jev scoring failed for %s after retries, skipping this tick", symbol)
+        mode = getattr(cfg.risk, "entry_mode", "jev")
+        result = ConvictionResult(score=0.0, confidence=0.0, raw={})
+        latency_ms = 0.0
+        jev_ok = False
+        if mode != "rule":
+            t0 = time.monotonic()
+            try:
+                result = retry_with_backoff(lambda: evaluator.evaluate_signal(context), max_retries=2, base_delay_s=0.5)
+                jev_ok = (
+                    result.score >= cfg.risk.min_conviction
+                    and result.confidence >= cfg.risk.min_confidence
+                )
+            except Exception:
+                logger.exception("Jev scoring failed for %s after retries, skipping this tick", symbol)
+                continue
+            latency_ms = (time.monotonic() - t0) * 1000
+        else:
+            # Rule-only: still satisfy the governor floors with a synthetic pass.
+            result = ConvictionResult(score=1.0, confidence=1.0, raw={"mode": "rule"})
+            jev_ok = True
+
+        gate_ok, gate_reason = combine_votes(mode, jev_ok, vote)
+        if not gate_ok:
+            audit.log_decision(
+                security_id=security_id,
+                jev_conviction=result.score,
+                jev_confidence=result.confidence,
+                action="SKIP",
+                latency_ms=latency_ms,
+                otr_check=gate_reason,
+                order_id=None,
+                had_news=(len(headlines) > 0) if news_source is not None else None,
+            )
             continue
-        latency_ms = (time.monotonic() - t0) * 1000
 
         try:
             live_quote = _get_quote(gateway, tick_cache, scrip_code)
