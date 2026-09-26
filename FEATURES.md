@@ -387,6 +387,15 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 
 ## Changelog
 
+### 2026-09-26 (v12)
+- Partial fills: `wait_for_fill` returns PARTIAL when filled_qty < requested.
+  Entry books only filled qty and cancels the residual. Exit reduces store
+  qty and retries the tail. Missing filled_qty is TIMEOUT, never assumed full.
+- Order id parsed from order_id / id / oms_order_id.
+- Default fill wait 3s so the single-thread loop does not stall 10s/symbol.
+- CANCELLED is distinct from REJECTED; cancel-with-fill becomes PARTIAL.
+- Kill switch re-reads `/positions` after MARKET flatten and logs leftovers.
+
 ### 2026-09-26 (v11)
 - **Fill confirmation.** Every earlier version of this codebase (mine and
   Grok's) treated a `200 OK` from `POST /order` as equivalent to a fill —

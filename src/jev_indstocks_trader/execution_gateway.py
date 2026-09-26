@@ -34,17 +34,59 @@ from .risk_governor import round_to_tick
 
 logger = logging.getLogger(__name__)
 
-FILLED_STATUSES = {"COMPLETE", "FILLED", "EXECUTED"}
-TERMINAL_REJECTED_STATUSES = {"REJECTED", "CANCELLED", "CANCELED"}
+FILLED_STATUSES = {"COMPLETE", "FILLED", "EXECUTED", "TRADED"}
+REJECTED_STATUSES = {"REJECTED", "FAILED", "EXPIRED"}
+CANCELLED_STATUSES = {"CANCELLED", "CANCELED"}
+ORDER_ID_KEYS = ("order_id", "id", "oms_order_id", "orderId")
+FILLED_QTY_KEYS = ("filled_qty", "traded_qty", "filledQty", "tradedQty", "filled_quantity")
+
+
+def extract_order_id(payload: object) -> Optional[str]:
+    """Pull an order id out of a place-order response or a book row."""
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data", payload)
+    if isinstance(data, list) and data:
+        data = data[0]
+    if not isinstance(data, dict):
+        return None
+    for key in ORDER_ID_KEYS:
+        val = data.get(key)
+        if val not in (None, ""):
+            return str(val)
+    return None
+
+
+def _filled_qty(order: dict) -> Optional[int]:
+    """Only real fill fields — never fall back to the requested `qty`."""
+    for key in FILLED_QTY_KEYS:
+        val = order.get(key)
+        if val not in (None, ""):
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _avg_price(order: dict) -> Optional[float]:
+    for key in ("avg_price", "average_price", "avgPrice", "averagePrice"):
+        val = order.get(key)
+        if val not in (None, ""):
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                continue
+    return None
 
 
 @dataclass(frozen=True)
 class FillResult:
     """Outcome of polling an order to a terminal state (or timing out).
 
-    status is one of "FILLED", "REJECTED", "TIMEOUT", "NOT_FOUND".
-    avg_price is only meaningful when status == "FILLED"; callers must not
-    use filled_qty/avg_price for any other status.
+    status is one of "FILLED", "PARTIAL", "REJECTED", "CANCELLED",
+    "TIMEOUT", "NOT_FOUND". avg_price / filled_qty are only meaningful
+    for FILLED and PARTIAL.
     """
 
     status: str
@@ -182,9 +224,11 @@ class ExecutionGateway:
 
     def get_order_status(self, order_id: str) -> Optional[dict]:
         """Finds one order in the order book by id. Returns None if not found."""
+        if not order_id:
+            return None
         for order in self.get_order_book():
-            oid = order.get("order_id") or order.get("id")
-            if oid is not None and str(oid) == str(order_id):
+            oid = extract_order_id(order)
+            if oid is not None and oid == str(order_id):
                 return order
         return None
 
@@ -198,14 +242,21 @@ class ExecutionGateway:
         resp.raise_for_status()
 
     def wait_for_fill(
-        self, order_id: str, timeout_s: float = 10.0, poll_interval_s: float = 1.0
+        self,
+        order_id: Optional[str],
+        timeout_s: float = 3.0,
+        poll_interval_s: float = 0.4,
+        requested_qty: Optional[int] = None,
     ) -> FillResult:
-        """Polls the order book until the order reaches a terminal state or timeout_s elapses.
+        """Poll until terminal, partial-vs-full, or timeout.
 
-        Never guesses: an order still pending (or never seen) at the deadline
-        comes back as TIMEOUT/NOT_FOUND rather than being assumed filled or
-        rejected. Callers must branch explicitly on all four statuses.
+        Default timeout is short on purpose: the trading loop is single-threaded
+        and exits cannot run while this blocks. Never treats missing filled_qty
+        as a full fill.
         """
+        if not order_id:
+            return FillResult(status="NOT_FOUND", filled_qty=0, avg_price=None, raw=None)
+
         deadline = time.monotonic() + timeout_s
         last_seen: Optional[dict] = None
         while time.monotonic() < deadline:
@@ -213,19 +264,26 @@ class ExecutionGateway:
             if order is not None:
                 last_seen = order
                 status = str(order.get("status", "")).upper()
+                logger.info("wait_for_fill order=%s raw_status=%s", order_id, status)
+                filled = _filled_qty(order)
+                avg = _avg_price(order)
                 if status in FILLED_STATUSES:
-                    filled_qty = int(order.get("filled_qty", order.get("qty", 0)) or 0)
-                    avg_price_raw = order.get("avg_price", order.get("average_price"))
-                    avg_price = float(avg_price_raw) if avg_price_raw not in (None, "") else None
-                    return FillResult(status="FILLED", filled_qty=filled_qty, avg_price=avg_price, raw=order)
-                if status in TERMINAL_REJECTED_STATUSES:
+                    if filled is None or filled <= 0:
+                        # Broker said COMPLETE but gave us no fill size — do not guess.
+                        return FillResult(status="TIMEOUT", filled_qty=0, avg_price=avg, raw=order)
+                    if requested_qty is not None and filled < requested_qty:
+                        return FillResult(status="PARTIAL", filled_qty=filled, avg_price=avg, raw=order)
+                    return FillResult(status="FILLED", filled_qty=filled, avg_price=avg, raw=order)
+                if status in REJECTED_STATUSES:
                     return FillResult(status="REJECTED", filled_qty=0, avg_price=None, raw=order)
+                if status in CANCELLED_STATUSES:
+                    if filled and filled > 0:
+                        return FillResult(status="PARTIAL", filled_qty=filled, avg_price=avg, raw=order)
+                    return FillResult(status="CANCELLED", filled_qty=0, avg_price=None, raw=order)
             time.sleep(poll_interval_s)
-        status = "TIMEOUT" if last_seen is not None else "NOT_FOUND"
+        out_status = "TIMEOUT" if last_seen is not None else "NOT_FOUND"
         logger.warning(
-            "wait_for_fill: order %s did not reach a terminal state within %.1fs (status=%s)",
-            order_id,
-            timeout_s,
-            status,
+            "wait_for_fill: order %s did not reach a terminal state within %.1fs (status=%s raw=%s)",
+            order_id, timeout_s, out_status, (last_seen or {}).get("status"),
         )
-        return FillResult(status=status, filled_qty=0, avg_price=None, raw=last_seen)
+        return FillResult(status=out_status, filled_qty=_filled_qty(last_seen or {}) or 0, avg_price=_avg_price(last_seen or {}), raw=last_seen)

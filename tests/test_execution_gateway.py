@@ -79,6 +79,47 @@ def test_cancel_order_calls_delete(mocker):
     assert "OID1" in delete_mock.call_args.args[0]
 
 
+def test_extract_order_id_from_common_shapes():
+    from jev_indstocks_trader.execution_gateway import extract_order_id
+    assert extract_order_id({"data": {"order_id": "A"}}) == "A"
+    assert extract_order_id({"data": {"id": "B"}}) == "B"
+    assert extract_order_id({"oms_order_id": "C"}) == "C"
+    assert extract_order_id({"data": {}}) is None
+
+
+def test_wait_for_fill_complete_without_filled_qty_is_timeout(mocker):
+    gw = make_gateway(mocker)
+    mocker.patch.object(
+        gw, "get_order_status",
+        return_value={"order_id": "OID1", "status": "COMPLETE", "qty": 10},
+    )
+    result = gw.wait_for_fill("OID1", timeout_s=1.0, poll_interval_s=0.01)
+    assert result.status == "TIMEOUT"
+
+
+def test_wait_for_fill_partial_when_filled_lt_requested(mocker):
+    gw = make_gateway(mocker)
+    mocker.patch.object(
+        gw, "get_order_status",
+        return_value={"order_id": "OID1", "status": "COMPLETE", "filled_qty": 3, "avg_price": 100.0},
+    )
+    result = gw.wait_for_fill("OID1", timeout_s=1.0, poll_interval_s=0.01, requested_qty=10)
+    assert result.status == "PARTIAL"
+    assert result.filled_qty == 3
+
+
+def test_wait_for_fill_cancelled_without_fill(mocker):
+    gw = make_gateway(mocker)
+    mocker.patch.object(gw, "get_order_status", return_value={"order_id": "OID1", "status": "CANCELLED"})
+    result = gw.wait_for_fill("OID1", timeout_s=1.0, poll_interval_s=0.01)
+    assert result.status == "CANCELLED"
+
+
+def test_wait_for_fill_missing_order_id(mocker):
+    gw = make_gateway(mocker)
+    assert gw.wait_for_fill(None).status == "NOT_FOUND"
+
+
 def test_fill_result_is_a_plain_dataclass():
     fr = FillResult(status="FILLED", filled_qty=5, avg_price=99.5, raw={"x": 1})
     assert fr.status == "FILLED"

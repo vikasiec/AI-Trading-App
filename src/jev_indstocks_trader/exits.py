@@ -18,7 +18,7 @@ from typing import Optional
 
 from .audit import AuditTrail
 from .costs import CostRates, compute_round_trip_cost
-from .execution_gateway import ExecutionGateway
+from .execution_gateway import ExecutionGateway, extract_order_id
 from . import gtt_orders
 from .positions import Position, PositionStore
 
@@ -108,7 +108,9 @@ class ExitManager:
                         segment=position.segment,
                         product=position.product,
                     )
-                order_id = order.get("data", {}).get("order_id")
+                order_id = extract_order_id(order)
+                if not order_id:
+                    raise RuntimeError(f"exit place-order returned no id: {order}")
         except Exception:
             logger.exception(
                 "Exit order FAILED for %s (%s) -- position remains open, will retry next tick",
@@ -129,8 +131,8 @@ class ExitManager:
             # have already executed would just produce a confusing second error, and
             # leaving the position tracked as still-open is the safe default here --
             # reconciliation.py will catch a real mismatch against the broker.
-            fill = self.gateway.wait_for_fill(order_id)
-            if fill.status == "REJECTED":
+            fill = self.gateway.wait_for_fill(order_id, timeout_s=3.0, requested_qty=position.qty)
+            if fill.status in ("REJECTED", "CANCELLED"):
                 logger.error(
                     "Exit order %s for %s was REJECTED -- position remains open, will retry next tick",
                     order_id, position.security_id,
@@ -152,6 +154,31 @@ class ExitManager:
                         f"AMBIGUOUS EXIT FILL: {position.security_id} order {order_id} "
                         f"status={fill.status} ({reason}) -- verify manually against the "
                         f"broker order book; position left tracked as open"
+                    )
+                return
+            if fill.status == "PARTIAL":
+                closed_qty = fill.filled_qty
+                fill_price = fill.avg_price or live_ltp
+                remainder = position.qty - closed_qty
+                logger.error(
+                    "Partial exit fill for %s: closed %d, remainder %d left open",
+                    position.security_id, closed_qty, remainder,
+                )
+                realized_pnl = (fill_price - position.entry_price) * closed_qty
+                cost = compute_round_trip_cost(
+                    buy_price=position.entry_price, sell_price=fill_price, qty=closed_qty,
+                    product=position.product, rates=self.cost_rates,
+                )
+                self.audit.update_outcome(
+                    position.decision_id, fill_price=fill_price,
+                    realized_pnl=realized_pnl, net_pnl=realized_pnl - cost.total,
+                )
+                position.qty = remainder
+                self.store.add(position)
+                if self.notifier is not None:
+                    self.notifier.send_critical_alert(
+                        f"PARTIAL EXIT {position.security_id}: sold {closed_qty}, "
+                        f"{remainder} still open — will retry next tick"
                     )
                 return
             fill_price = fill.avg_price or live_ltp

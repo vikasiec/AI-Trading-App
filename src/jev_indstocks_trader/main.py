@@ -27,7 +27,7 @@ from .config import load_config, validate_config
 from .health import build_payload, start_health_server
 from .slog import configure_logging
 from .costs import CostRates
-from .execution_gateway import ExecutionGateway
+from .execution_gateway import ExecutionGateway, extract_order_id
 from .exits import ExitManager
 from .feature_prep import MarketSnapshot, build_context
 from . import gtt_orders
@@ -244,24 +244,39 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                 elif not cfg.risk.paper_trading:
                     try:
                         order = gateway.place_limit_order(security_id, "BUY", qty, live_ltp)
-                        order_id = order.get("data", {}).get("order_id")
-                        # Acceptance is not fill -- confirm before trusting this order
-                        # with money-related decisions (see execution_gateway.py).
-                        fill = gateway.wait_for_fill(order_id)
-                        if fill.status == "FILLED":
-                            fill_price = fill.avg_price or live_ltp
-                            action = "BUY"
-                            governor.mark_executed(security_id)
-                            notifier.send_info(
-                                f"BUY {symbol} x{qty} @ {fill_price} (order {order_id}, confirmed filled)"
-                            )
-                        elif fill.status == "REJECTED":
-                            logger.warning("Order %s for %s was rejected -- not opening a position", order_id, symbol)
+                        order_id = extract_order_id(order)
+                        if not order_id:
+                            logger.error("Place-order response for %s had no order id: %s", symbol, order)
                             approved = False
                             qty = 0
                             action = "SKIP"
-                            reason = "order_rejected"
+                            reason = "order_id_missing"
                         else:
+                            fill = gateway.wait_for_fill(order_id, timeout_s=3.0, requested_qty=qty)
+                        if order_id and fill.status in ("FILLED", "PARTIAL"):
+                            fill_price = fill.avg_price or live_ltp
+                            qty = fill.filled_qty
+                            if fill.status == "PARTIAL":
+                                try:
+                                    gateway.cancel_order(order_id)
+                                except Exception:
+                                    logger.exception("Could not cancel residual after partial BUY %s", order_id)
+                                notifier.send_critical_alert(
+                                    f"PARTIAL FILL BUY {symbol}: booked {qty} of requested, "
+                                    f"cancelled residual order {order_id} — verify book"
+                                )
+                            action = "BUY" if fill.status == "FILLED" else "BUY (partial)"
+                            governor.mark_executed(security_id)
+                            notifier.send_info(
+                                f"BUY {symbol} x{qty} @ {fill_price} (order {order_id}, {fill.status})"
+                            )
+                        elif order_id and fill.status in ("REJECTED", "CANCELLED"):
+                            logger.warning("Order %s for %s was %s -- not opening a position", order_id, symbol, fill.status)
+                            approved = False
+                            qty = 0
+                            action = "SKIP"
+                            reason = f"order_{fill.status.lower()}"
+                        elif order_id:
                             # TIMEOUT / NOT_FOUND: genuinely ambiguous. Best-effort cancel
                             # so we don't end up with an untracked fill, then alert a human
                             # -- reconciliation.py is the backstop if it filled anyway.

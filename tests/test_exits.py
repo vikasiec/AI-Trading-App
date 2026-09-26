@@ -108,7 +108,8 @@ def test_live_mode_exit_places_sell_order(tmp_path, mocker):
     assert kwargs["side"] == "SELL"
     assert kwargs["qty"] == 10
     gateway.place_limit_order.assert_not_called()
-    gateway.wait_for_fill.assert_called_once_with("OID1")
+    assert gateway.wait_for_fill.call_count == 1
+    assert gateway.wait_for_fill.call_args.args[0] == "OID1"
     assert store.list_open() == []
 
 
@@ -231,6 +232,32 @@ def test_rejected_exit_fill_keeps_position_open(tmp_path, mocker):
 
     assert len(store.list_open()) == 1  # position NOT cleared -- will retry next tick
     audit.update_outcome.assert_not_called()
+    notifier.send_critical_alert.assert_called_once()
+
+
+def test_partial_exit_fill_keeps_remainder(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position(qty=10))
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2420.0
+    gateway.place_market_order.return_value = {"data": {"order_id": "OID1"}}
+    gateway.wait_for_fill.return_value = FillResult(
+        status="PARTIAL", filled_qty=4, avg_price=2420.0, raw={}
+    )
+    audit = mocker.Mock()
+    notifier = mocker.Mock()
+
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375,
+        notifier=notifier, paper_trading=False,
+    )
+    manager.check_and_exit_all()
+
+    open_pos = store.list_open()
+    assert len(open_pos) == 1
+    assert open_pos[0].qty == 6
+    audit.update_outcome.assert_called_once()
     notifier.send_critical_alert.assert_called_once()
 
 

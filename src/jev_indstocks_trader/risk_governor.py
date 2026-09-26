@@ -202,5 +202,22 @@ class RiskGovernor:
                         "Kill-switch flatten failed for %s: %s",
                         pos.get("security_id"), resp.text,
                     )
+            # Acceptance is not flat — re-read positions briefly and shout leftovers.
+            leftover = []
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                check = requests.get(f"{self.cfg.base_url}/positions", headers=headers, timeout=10)
+                check.raise_for_status()
+                leftover = [
+                    p for p in check.json().get("data", []) if p.get("net_qty", 0) != 0
+                ]
+                if not leftover:
+                    break
+                time.sleep(0.4)
+            if leftover:
+                logger.critical(
+                    "KILL SWITCH incomplete — still open at broker: %s",
+                    [(p.get("security_id"), p.get("net_qty")) for p in leftover],
+                )
         except requests.RequestException:
             logger.exception("Error squaring off positions during kill switch")

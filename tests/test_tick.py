@@ -164,6 +164,24 @@ def test_tick_uses_confirmed_avg_price_for_entry(tmp_path, mocker):
     assert pos.stop_loss_price == 2452.5 * (1 - cfg.risk.stop_loss_pct)
 
 
+def test_tick_partial_fill_books_only_filled_qty(tmp_path, mocker):
+    cfg, gateway, governor, evaluator, instruments, audit, notifier, store, cache = _setup(
+        tmp_path, mocker, paper=False
+    )
+    gateway.wait_for_fill.return_value = FillResult(
+        status="PARTIAL", filled_qty=3, avg_price=2451.0, raw={}
+    )
+
+    _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
+          store, ["RELIANCE"], None, cache)
+
+    gateway.cancel_order.assert_called_once_with("OID1")
+    pos = store.list_open()[0]
+    assert pos.qty == 3
+    assert pos.entry_price == 2451.0
+    governor.mark_executed.assert_called_once()
+
+
 def test_tick_feeds_change_and_volume_to_jev(tmp_path, mocker):
     cfg, gateway, governor, evaluator, instruments, audit, notifier, store, cache = _setup(
         tmp_path, mocker, paper=True
