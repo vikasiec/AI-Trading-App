@@ -104,6 +104,13 @@ class AppConfig:
     health_host: str = field(default_factory=lambda: _optional("HEALTH_HOST", "127.0.0.1"))
     health_port: int = field(default_factory=lambda: int(_optional("HEALTH_PORT", "8080")))
     health_token: str = field(default_factory=lambda: _optional("HEALTH_TOKEN", ""))
+    heartbeat_interval_s: float = field(default_factory=lambda: float(_optional("HEARTBEAT_INTERVAL_S", "30")))
+    heartbeat_fails_before_flatten: int = field(
+        default_factory=lambda: int(_optional("HEARTBEAT_FAILS_BEFORE_FLATTEN", "5"))
+    )
+    heartbeat_flatten: bool = field(
+        default_factory=lambda: _optional("HEARTBEAT_FLATTEN", "false").lower() == "true"
+    )
 
 
 def validate_config(cfg: AppConfig) -> list[str]:

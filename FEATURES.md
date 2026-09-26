@@ -387,6 +387,11 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 
 ## Changelog
 
+### 2026-09-26 (v16)
+- Broker heartbeat on GET `/user/profile`. Paper alerts only. Live flatten
+  only if HEARTBEAT_FLATTEN=true after N failures.
+- requirements.txt pinned to exact versions.
+
 ### 2026-09-26 (v14)
 - Telegram kill: `/halt CONFIRM` plus owner user id; forwards ignored.
 - Unreadable `/funds` blocks entries and does not auto-flatten.

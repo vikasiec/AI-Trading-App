@@ -25,6 +25,7 @@ from . import auth
 from .audit import AuditTrail
 from .config import load_config, validate_config
 from .health import build_payload, start_health_server
+from .heartbeat import BrokerHeartbeat
 from .session import now_ist, session_phase
 from .slog import configure_logging
 from .costs import CostRates
@@ -93,6 +94,15 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
         auth_headers_fn=auth_headers_fn,
     )
     reconciler = ReconciliationService(gateway, position_store, interval_s=60.0, notifier=notifier)
+    heartbeat = BrokerHeartbeat(
+        cfg.indstocks,
+        auth_headers_fn,
+        interval_s=cfg.heartbeat_interval_s,
+        fails_before_flatten=cfg.heartbeat_fails_before_flatten,
+        flatten_on_outage=cfg.heartbeat_flatten and not cfg.risk.paper_trading,
+        flatten_fn=_kill_switch,
+        notifier=notifier,
+    )
 
     watchlist = load_watchlist(cfg)
     logger.info("Watchlist: %s", watchlist)
@@ -142,6 +152,8 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     flattened_on: str | None = None
     try:
         while True:
+            if heartbeat.due():
+                heartbeat.ping()
             phase = session_phase() if cfg.respect_session else "open"
             today = now_ist().date().isoformat()
             if phase == "closed":

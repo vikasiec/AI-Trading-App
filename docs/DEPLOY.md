@@ -41,9 +41,15 @@ start, then the trader. Add a host cron `docker compose run --rm token` at
   quotes work without it).
 - `/halt CONFIRM` from your Telegram user. Test that the day you deploy,
   before you need it.
-- Architecture §11 mentions a `/user/profile` heartbeat that flattens on
-  prolonged outage. **That heartbeat is not implemented.** systemd restart
-  is the current backstop.
+- Heartbeat: `GET /user/profile` every `HEARTBEAT_INTERVAL_S`. Failures
+  alert Telegram. Live + `HEARTBEAT_FLATTEN=true` flattens after
+  `HEARTBEAT_FAILS_BEFORE_FLATTEN` misses. Paper never auto-flattens.
+
+## What I cannot do from the repo
+
+Fill `.env`, buy the VPS, whitelist the IP, push with your GitHub login,
+or flip `PAPER_TRADING=false`. Those stay on you. See the split in the
+last working notes: you run paper; I patch from logs you send.
 
 ## Day-1 paper checklist
 
