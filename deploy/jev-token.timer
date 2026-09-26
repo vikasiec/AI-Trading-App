@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekday 09:00 IST INDstocks token refresh
+
+[Timer]
+OnCalendar=Mon..Fri 09:00
+Persistent=true
+Unit=jev-token.service
+
+[Install]
+WantedBy=timers.target

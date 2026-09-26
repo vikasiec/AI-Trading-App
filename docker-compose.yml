@@ -1,0 +1,38 @@
+# Two processes, one shared token volume.
+# token: the ONLY process allowed to call /generate/token
+# trader: reads the cache, never refreshes
+#
+#   cp .env.example .env   # fill secrets
+#   docker compose up -d
+
+services:
+  token:
+    build: .
+    env_file: .env
+    environment:
+      INDSTOCKS_TOKEN_CACHE: /home/trader/.indstocks/session_token.json
+    volumes:
+      - token_cache:/home/trader/.indstocks
+    command: ["python", "scripts/refresh_token.py"]
+    restart: "no"
+
+  trader:
+    build: .
+    env_file: .env
+    depends_on:
+      token:
+        condition: service_completed_successfully
+    environment:
+      INDSTOCKS_TOKEN_CACHE: /home/trader/.indstocks/session_token.json
+      POSITIONS_STORE_PATH: /home/trader/.indstocks/open_positions.json
+      AUDIT_LOG_PATH: /home/trader/.indstocks/audit_trail.jsonl
+      HEALTH_HOST: 127.0.0.1
+    volumes:
+      - token_cache:/home/trader/.indstocks
+    network_mode: host
+    restart: unless-stopped
+    mem_limit: 512m
+    pids_limit: 64
+
+volumes:
+  token_cache:

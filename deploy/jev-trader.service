@@ -1,0 +1,26 @@
+[Unit]
+Description=Jev + INDstocks paper trader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trader
+Group=trader
+WorkingDirectory=/opt/jev-trader
+EnvironmentFile=/opt/jev-trader/.env
+ExecStart=/opt/jev-trader/.venv/bin/python -m jev_indstocks_trader.main
+Restart=on-failure
+RestartSec=5
+# Do not restart forever through a bad flatten loop
+StartLimitBurst=8
+StartLimitIntervalSec=300
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/trader/.indstocks /opt/jev-trader
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
