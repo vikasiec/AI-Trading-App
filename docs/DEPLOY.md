@@ -53,3 +53,67 @@ start, then the trader. Add a host cron `docker compose run --rm token` at
 - [ ] Telegram `/status` replies
 - [ ] After 15:15 IST, flatten log line appears (or “closed” idle on weekend)
 - [ ] Next morning token timer ran
+
+## Infra cost for 24×7 (cloud)
+
+The bot is one Python loop (~150–300 MB RAM, a few MB/day of quotes +
+Telegram + Jev). It does **not** need Kubernetes, a load balancer, a
+managed DB, or a GPU. Jev inference is an HTTP call.
+
+Run it **24×7** anyway: nights and weekends it idles, but Monday 09:15
+and the 15:15 IST flatten only work if the box is up. A laptop lid or a
+scale-to-zero function will miss both.
+
+Prices below are public list prices as of late September 2026, USD,
+excluding GST/VAT and FX. Treat them as planning numbers, not invoices.
+
+### Budget
+
+| Setup | What you get | Approx / month | Year |
+|---|---|---|---|
+| Minimum that works | 1 vCPU, 512 MB–1 GB, static IPv4 | $4–7 (~₹350–600) | $50–85 |
+| Comfortable (recommended) | 1–2 vCPU, 1–2 GB, weekly snapshots | $6–12 (~₹500–1,000) | $70–145 |
+| Cloud theatre | ECS/EKS + NAT + LB + CloudWatch + RDS | $40–150+ | waste |
+
+If the infra bill is above ~₹1,000/month, you overbuilt.
+
+### Concrete options
+
+| Provider | Plan | Notes |
+|---|---|---|
+| DigitalOcean | Basic 512 MB **$4/mo**, 1 GB **$6/mo** | IP included. Bangalore / Singapore regions exist. |
+| AWS Lightsail Mumbai | 512 MB + public IPv4 **$5/mo**, 1 GB **$7/mo** | Mumbai transfer allowance is half the global bundle. IPv6-only ($3.50) is a bad fit — INDstocks whitelist wants stable IPv4. |
+| Hetzner CX22 | ~$5–6/mo for 2 vCPU / 4 GB | Overkill for this process. No India DC (EU / US / Singapore). Extra latency to NSE APIs. |
+| India VPS (Noida etc.) | often ₹400–800/mo | GST invoice, low IST latency. |
+
+Raw EC2 + Elastic IP + NAT + CloudWatch looks cheap on the calculator
+and is not. Lightsail is the sane AWS path if you already live there.
+
+### Do not pay for
+
+| Item | Why skip |
+|---|---|
+| Load balancer | One process, healthz on loopback |
+| Managed Kubernetes | Ops cost > the VM |
+| Managed database | Positions are a JSON file |
+| GPU / big RAM | No local model |
+| Multi-AZ HA | One bot; two boxes also means two token refreshers (forbidden) |
+| Scale-to-zero / Lambda | Cold start misses the open and the flatten |
+
+Egress is tiny. Included transfer on any $5 plan is enough.
+
+### Extra that does cost
+
+- Snapshots / backups: ~20% of a DigitalOcean droplet, or about $1.
+- GST 18% on Indian invoices; USD cards pick up bank FX.
+- **Jev / TypeSafe usage and INDstocks brokerage are not infra.** Live
+  trading will dwarf the VPS bill.
+- A second “HA” box doubles infra and breaks single-owner token refresh.
+
+### Recommendation
+
+**$6/mo DigitalOcean 1 GB (Bangalore) or Lightsail 1 GB (Mumbai).**
+`PAPER_TRADING=true`, systemd units above, weekly snapshots.
+
+Keep a dedicated static IPv4 and whitelist it on the INDstocks dashboard
+before any live order. Quotes work without that; `/order` does not.
