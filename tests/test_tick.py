@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from jev_indstocks_trader.config import load_config
+from jev_indstocks_trader.execution_gateway import FillResult
 from jev_indstocks_trader.jev_client import ConvictionResult
 from jev_indstocks_trader.main import _tick
 from jev_indstocks_trader.market_data import LiveTickCache
@@ -27,6 +28,7 @@ def _setup(tmp_path, mocker, paper=True, quotes=None):
     gateway.equity_from_funds.return_value = 1_000_000.0
     gateway.get_funds.return_value = {"sod_balance": 1_000_000.0, "available_balance": 1_000_000.0}
     gateway.place_limit_order.return_value = {"data": {"order_id": "OID1"}}
+    gateway.wait_for_fill.return_value = FillResult(status="FILLED", filled_qty=10, avg_price=None, raw={})
     gateway.auth_headers_fn = lambda: {}
 
     governor = mocker.Mock()
@@ -113,6 +115,53 @@ def test_tick_live_success_marks_and_stores(tmp_path, mocker):
     governor.mark_executed.assert_called_once_with("2885")
     assert store.has_open("2885")
     notifier.send_info.assert_called_once()
+
+
+def test_tick_rejected_fill_does_not_store_position(tmp_path, mocker):
+    cfg, gateway, governor, evaluator, instruments, audit, notifier, store, cache = _setup(
+        tmp_path, mocker, paper=False
+    )
+    gateway.wait_for_fill.return_value = FillResult(
+        status="REJECTED", filled_qty=0, avg_price=None, raw={"status": "REJECTED"}
+    )
+
+    _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
+          store, ["RELIANCE"], None, cache)
+
+    governor.mark_executed.assert_not_called()
+    assert store.list_open() == []
+
+
+def test_tick_ambiguous_fill_cancels_and_does_not_store(tmp_path, mocker):
+    cfg, gateway, governor, evaluator, instruments, audit, notifier, store, cache = _setup(
+        tmp_path, mocker, paper=False
+    )
+    gateway.wait_for_fill.return_value = FillResult(status="TIMEOUT", filled_qty=0, avg_price=None, raw=None)
+
+    _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
+          store, ["RELIANCE"], None, cache)
+
+    gateway.cancel_order.assert_called_once_with("OID1")
+    governor.mark_executed.assert_not_called()
+    assert store.list_open() == []
+    notifier.send_critical_alert.assert_called_once()
+
+
+def test_tick_uses_confirmed_avg_price_for_entry(tmp_path, mocker):
+    cfg, gateway, governor, evaluator, instruments, audit, notifier, store, cache = _setup(
+        tmp_path, mocker, paper=False
+    )
+    gateway.wait_for_fill.return_value = FillResult(
+        status="FILLED", filled_qty=10, avg_price=2452.5, raw={"status": "COMPLETE"}
+    )
+
+    _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
+          store, ["RELIANCE"], None, cache)
+
+    assert store.has_open("2885")
+    pos = store.list_open()[0]
+    assert pos.entry_price == 2452.5
+    assert pos.stop_loss_price == 2452.5 * (1 - cfg.risk.stop_loss_pct)
 
 
 def test_tick_feeds_change_and_volume_to_jev(tmp_path, mocker):

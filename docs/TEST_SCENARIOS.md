@@ -23,7 +23,7 @@ credentials. You'll fill in real values starting at scenario 5.
 ```bash
 pytest tests/ -v
 ```
-Expect `79 passed`. If anything fails here, stop and fix the environment
+Expect `117 passed`. If anything fails here, stop and fix the environment
 before trying the scenarios below — they build on the same code.
 
 ---

@@ -226,6 +226,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
         action = "SKIP"
         order_id = None
         qty = 0
+        fill_price = live_ltp
         if approved:
             funds = gateway.get_funds()
             equity = gateway.equity_from_funds(funds)
@@ -244,9 +245,42 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                     try:
                         order = gateway.place_limit_order(security_id, "BUY", qty, live_ltp)
                         order_id = order.get("data", {}).get("order_id")
-                        action = "BUY"
-                        governor.mark_executed(security_id)
-                        notifier.send_info(f"BUY {symbol} x{qty} @ ~{live_ltp} (order {order_id})")
+                        # Acceptance is not fill -- confirm before trusting this order
+                        # with money-related decisions (see execution_gateway.py).
+                        fill = gateway.wait_for_fill(order_id)
+                        if fill.status == "FILLED":
+                            fill_price = fill.avg_price or live_ltp
+                            action = "BUY"
+                            governor.mark_executed(security_id)
+                            notifier.send_info(
+                                f"BUY {symbol} x{qty} @ {fill_price} (order {order_id}, confirmed filled)"
+                            )
+                        elif fill.status == "REJECTED":
+                            logger.warning("Order %s for %s was rejected -- not opening a position", order_id, symbol)
+                            approved = False
+                            qty = 0
+                            action = "SKIP"
+                            reason = "order_rejected"
+                        else:
+                            # TIMEOUT / NOT_FOUND: genuinely ambiguous. Best-effort cancel
+                            # so we don't end up with an untracked fill, then alert a human
+                            # -- reconciliation.py is the backstop if it filled anyway.
+                            logger.error(
+                                "Order %s for %s did not reach a terminal state (%s) -- "
+                                "attempting cancel and alerting", order_id, symbol, fill.status,
+                            )
+                            try:
+                                gateway.cancel_order(order_id)
+                            except Exception:
+                                logger.exception("Best-effort cancel of ambiguous order %s failed", order_id)
+                            notifier.send_critical_alert(
+                                f"AMBIGUOUS FILL: {symbol} order {order_id} status={fill.status} "
+                                f"-- attempted cancel, verify manually against the broker order book"
+                            )
+                            approved = False
+                            qty = 0
+                            action = "SKIP"
+                            reason = "order_fill_unresolved"
                     except Exception:
                         logger.exception("Order placement failed for %s -- not marking executed", symbol)
                         approved = False
@@ -269,8 +303,8 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
         )
 
         if approved and qty > 0:
-            stop_loss_price = live_ltp * (1 - cfg.risk.stop_loss_pct)
-            target_price = live_ltp * (1 + cfg.risk.target_pct)
+            stop_loss_price = fill_price * (1 - cfg.risk.stop_loss_pct)
+            target_price = fill_price * (1 + cfg.risk.target_pct)
 
             gtt_id = None
             if cfg.risk.gtt_enabled and not cfg.risk.paper_trading:
@@ -295,7 +329,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                 segment=instrument.get("segment", "EQUITY"),
                 product="INTRADAY",
                 qty=qty,
-                entry_price=live_ltp,
+                entry_price=fill_price,
                 stop_loss_price=stop_loss_price,
                 target_price=target_price,
                 opened_at=time.time(),

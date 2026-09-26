@@ -1,7 +1,22 @@
 import time
 
+from jev_indstocks_trader.execution_gateway import FillResult
 from jev_indstocks_trader.exits import ExitManager, determine_exit_reason
 from jev_indstocks_trader.positions import Position, PositionStore
+
+
+def _mock_successful_order_and_fill(gateway, order_id="OID1", avg_price=None):
+    """Wires a gateway mock so a placed exit order reports as accepted and
+    then confirmed FILLED -- the happy path most exit tests exercise.
+    avg_price=None means "use the requested price" (FillResult falls back
+    to live_ltp when avg_price is None).
+    """
+    order_response = {"data": {"order_id": order_id}}
+    gateway.place_market_order.return_value = order_response
+    gateway.place_limit_order.return_value = order_response
+    gateway.wait_for_fill.return_value = FillResult(
+        status="FILLED", filled_qty=10, avg_price=avg_price, raw={"order_id": order_id, "status": "COMPLETE"}
+    )
 
 
 def make_position(**overrides):
@@ -80,6 +95,7 @@ def test_live_mode_exit_places_sell_order(tmp_path, mocker):
 
     gateway = mocker.Mock()
     gateway.get_ltp.return_value = 2420.0  # hits stop loss
+    _mock_successful_order_and_fill(gateway)
     audit = mocker.Mock()
 
     manager = ExitManager(
@@ -92,6 +108,7 @@ def test_live_mode_exit_places_sell_order(tmp_path, mocker):
     assert kwargs["side"] == "SELL"
     assert kwargs["qty"] == 10
     gateway.place_limit_order.assert_not_called()
+    gateway.wait_for_fill.assert_called_once_with("OID1")
     assert store.list_open() == []
 
 
@@ -101,6 +118,7 @@ def test_live_mode_target_exit_places_limit_order(tmp_path, mocker):
 
     gateway = mocker.Mock()
     gateway.get_ltp.return_value = 2500.0  # hits target
+    _mock_successful_order_and_fill(gateway)
     audit = mocker.Mock()
 
     manager = ExitManager(
@@ -140,6 +158,7 @@ def test_gtt_cancelled_on_live_exit(tmp_path, mocker):
 
     gateway = mocker.Mock()
     gateway.get_ltp.return_value = 2420.0  # hits stop loss
+    _mock_successful_order_and_fill(gateway)
     audit = mocker.Mock()
     cancel_mock = mocker.patch("jev_indstocks_trader.exits.gtt_orders.cancel_gtt")
 
@@ -159,6 +178,7 @@ def test_no_gtt_cancel_when_position_has_no_gtt_id(tmp_path, mocker):
 
     gateway = mocker.Mock()
     gateway.get_ltp.return_value = 2420.0
+    _mock_successful_order_and_fill(gateway)
     audit = mocker.Mock()
     cancel_mock = mocker.patch("jev_indstocks_trader.exits.gtt_orders.cancel_gtt")
 
@@ -186,6 +206,95 @@ def test_no_gtt_cancel_in_paper_mode(tmp_path, mocker):
     manager.check_and_exit_all()
 
     cancel_mock.assert_not_called()  # paper mode never touches real GTT orders
+
+
+# -- fill confirmation -------------------------------------------------------
+
+def test_rejected_exit_fill_keeps_position_open(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position())
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2420.0  # hits stop loss
+    gateway.place_market_order.return_value = {"data": {"order_id": "OID1"}}
+    gateway.wait_for_fill.return_value = FillResult(
+        status="REJECTED", filled_qty=0, avg_price=None, raw={"order_id": "OID1", "status": "REJECTED"}
+    )
+    audit = mocker.Mock()
+    notifier = mocker.Mock()
+
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375,
+        notifier=notifier, paper_trading=False,
+    )
+    manager.check_and_exit_all()
+
+    assert len(store.list_open()) == 1  # position NOT cleared -- will retry next tick
+    audit.update_outcome.assert_not_called()
+    notifier.send_critical_alert.assert_called_once()
+
+
+def test_ambiguous_exit_fill_keeps_position_open(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position())
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2420.0  # hits stop loss
+    gateway.place_market_order.return_value = {"data": {"order_id": "OID1"}}
+    gateway.wait_for_fill.return_value = FillResult(status="TIMEOUT", filled_qty=0, avg_price=None, raw=None)
+    audit = mocker.Mock()
+    notifier = mocker.Mock()
+
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375,
+        notifier=notifier, paper_trading=False,
+    )
+    manager.check_and_exit_all()
+
+    assert len(store.list_open()) == 1  # ambiguous -- left tracked as open, never cancelled on exit side
+    audit.update_outcome.assert_not_called()
+    notifier.send_critical_alert.assert_called_once()
+    gateway.cancel_order.assert_not_called()  # deliberately no cancel-on-ambiguous for exits
+
+
+def test_exit_uses_confirmed_avg_price_not_requested_ltp(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position())
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2420.0  # triggers stop-loss check, but isn't the real fill price
+    gateway.place_market_order.return_value = {"data": {"order_id": "OID1"}}
+    gateway.wait_for_fill.return_value = FillResult(
+        status="FILLED", filled_qty=10, avg_price=2415.0, raw={"order_id": "OID1", "status": "COMPLETE"}
+    )
+    audit = mocker.Mock()
+
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=False
+    )
+    manager.check_and_exit_all()
+
+    kwargs = audit.update_outcome.call_args.kwargs
+    assert kwargs["fill_price"] == 2415.0
+    expected_gross = (2415.0 - 2450.0) * 10
+    assert kwargs["realized_pnl"] == expected_gross
+
+
+def test_paper_mode_never_calls_wait_for_fill(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position())
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2500.0  # hits target
+    audit = mocker.Mock()
+
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=True
+    )
+    manager.check_and_exit_all()
+
+    gateway.wait_for_fill.assert_not_called()
+    assert store.list_open() == []
 
 
 # -- PositionStore persistence --------------------------------------------------

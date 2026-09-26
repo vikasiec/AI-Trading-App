@@ -86,10 +86,11 @@ class ExitManager:
             "Exiting %s: reason=%s entry=%.2f ltp=%.2f qty=%d",
             position.security_id, reason, position.entry_price, live_ltp, position.qty,
         )
+        order_id = None
         try:
             if not self.paper_trading:
                 if reason in ("stop_loss", "time_exit"):
-                    self.gateway.place_market_order(
+                    order = self.gateway.place_market_order(
                         security_id=position.security_id,
                         side="SELL",
                         qty=position.qty,
@@ -98,7 +99,7 @@ class ExitManager:
                         product=position.product,
                     )
                 else:
-                    self.gateway.place_limit_order(
+                    order = self.gateway.place_limit_order(
                         security_id=position.security_id,
                         side="SELL",
                         qty=position.qty,
@@ -107,6 +108,7 @@ class ExitManager:
                         segment=position.segment,
                         product=position.product,
                     )
+                order_id = order.get("data", {}).get("order_id")
         except Exception:
             logger.exception(
                 "Exit order FAILED for %s (%s) -- position remains open, will retry next tick",
@@ -119,9 +121,44 @@ class ExitManager:
                 )
             return
 
-        realized_pnl = (live_ltp - position.entry_price) * position.qty
+        fill_price = live_ltp
+        if not self.paper_trading:
+            # Acceptance is not fill -- confirm before touching the audit trail or
+            # removing the position from the store. Unlike the entry path, we do NOT
+            # attempt a cancel on an ambiguous exit fill: cancelling a SELL that may
+            # have already executed would just produce a confusing second error, and
+            # leaving the position tracked as still-open is the safe default here --
+            # reconciliation.py will catch a real mismatch against the broker.
+            fill = self.gateway.wait_for_fill(order_id)
+            if fill.status == "REJECTED":
+                logger.error(
+                    "Exit order %s for %s was REJECTED -- position remains open, will retry next tick",
+                    order_id, position.security_id,
+                )
+                if self.notifier is not None:
+                    self.notifier.send_critical_alert(
+                        f"Exit order rejected for {position.security_id} ({reason}, order {order_id}). "
+                        f"Position still open -- check manually."
+                    )
+                return
+            if fill.status in ("TIMEOUT", "NOT_FOUND"):
+                logger.error(
+                    "Exit order %s for %s did not reach a terminal state (%s) -- "
+                    "leaving position tracked as open, will re-check next tick",
+                    order_id, position.security_id, fill.status,
+                )
+                if self.notifier is not None:
+                    self.notifier.send_critical_alert(
+                        f"AMBIGUOUS EXIT FILL: {position.security_id} order {order_id} "
+                        f"status={fill.status} ({reason}) -- verify manually against the "
+                        f"broker order book; position left tracked as open"
+                    )
+                return
+            fill_price = fill.avg_price or live_ltp
+
+        realized_pnl = (fill_price - position.entry_price) * position.qty
         cost = compute_round_trip_cost(
-            buy_price=position.entry_price, sell_price=live_ltp, qty=position.qty,
+            buy_price=position.entry_price, sell_price=fill_price, qty=position.qty,
             product=position.product, rates=self.cost_rates,
         )
         net = realized_pnl - cost.total
@@ -130,7 +167,7 @@ class ExitManager:
             gtt_orders.cancel_gtt(self.indstocks_cfg, self.auth_headers_fn, position.gtt_id)
 
         self.audit.update_outcome(
-            position.decision_id, fill_price=live_ltp, realized_pnl=realized_pnl,
+            position.decision_id, fill_price=fill_price, realized_pnl=realized_pnl,
             net_pnl=net, costs={
                 "brokerage": cost.brokerage, "stt": cost.stt, "exchange_txn": cost.exchange_txn,
                 "sebi_turnover": cost.sebi_turnover, "stamp_duty": cost.stamp_duty, "gst": cost.gst,
@@ -142,6 +179,6 @@ class ExitManager:
         if self.notifier is not None:
             self.notifier.send_info(
                 f"Exited {position.security_id} ({reason}): entry {position.entry_price:.2f} -> "
-                f"{live_ltp:.2f}, qty {position.qty}, gross \u20b9{realized_pnl:.2f}, "
+                f"{fill_price:.2f}, qty {position.qty}, gross \u20b9{realized_pnl:.2f}, "
                 f"costs \u20b9{cost.total:.2f}, net \u20b9{net:.2f}"
             )

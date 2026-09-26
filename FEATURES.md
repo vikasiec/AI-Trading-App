@@ -130,7 +130,34 @@ invalid prices like `2450.049999999998`).
 Matches INDstocks' actual confirmed `/order` payload: `security_id` (not a
 ticker), `algo_id` (`99999` for regular orders — required or the order is
 rejected), `segment`, `validity`, and the rest. Also wraps `/order-book`,
-`/positions`, `/funds`, and `/market/quotes/ltp`.
+`/positions`, `/funds`, and `/market/quotes/ltp`. Since INDstocks'
+exact field names for equity/quote payloads weren't fully confirmed while
+building this, `equity_from_funds()` and `get_quote()` widen across the
+plausible field-name variants (`available_balance`/`net_balance`/
+`sod_balance`/`equity`, `live_price`/`ltp`, etc.) and fail closed (return
+`0.0` rather than guessing) when none of them are present.
+
+**Fill confirmation (`execution_gateway.py::wait_for_fill`)**
+A `200 OK` from `POST /order` means the broker *accepted* the order — it
+says nothing about whether the order actually *filled*, partially filled,
+or was rejected a moment later. Every order this bot places, entry or exit,
+is confirmed via `wait_for_fill()` (polls `/order-book` to a terminal state
+or a timeout) before any money-related decision is made off it — P&L is
+always computed from the *confirmed* fill price (`avg_price`), never the
+price the order was requested at. The four possible outcomes are handled
+explicitly, never guessed:
+- **FILLED** — proceed using the confirmed `avg_price` (falling back to the
+  requested price only if the broker didn't return one).
+- **REJECTED** — the order never happened: on the entry side, no position is
+  opened; on the exit side, the position stays open for retry next tick.
+- **TIMEOUT / NOT_FOUND** (ambiguous — still pending, or never showed up in
+  the order book within the poll window) — on the entry side, a best-effort
+  cancel is attempted and the position is never stored; on the exit side, no
+  cancel is attempted (cancelling a SELL that may have already filled is its
+  own failure mode) and the position is deliberately left tracked as open.
+  Either way a critical Telegram alert fires so a human can verify against
+  the broker directly, and `reconciliation.py` is the systemic backstop if
+  the ambiguous order turns out to have filled anyway.
 
 **Statutory cost engine (`costs.py`)**
 Computes the real cost of a round trip (one entry + one exit): brokerage
@@ -147,20 +174,28 @@ rates are configurable, since government/exchange rates do change.
 Every position this bot opens is tracked in a persisted `PositionStore` (a
 JSON file, not just memory — survives a restart) with its own stop-loss,
 target, and max-hold-time, computed from `STOP_LOSS_PCT` / `TARGET_PCT` /
-`MAX_HOLD_MINUTES` at entry. `ExitManager.check_and_exit_all()` runs at the
-top of every loop tick, **before** any new entries are considered — closing
-existing risk always takes priority over opening new risk. Whichever of
-stop-loss, target, or time-exit triggers first closes the position; the exit
-order is a LIMIT order at current LTP, consistent with the no-MARKET-orders
-price-collar policy everywhere else (the kill switch's `flatten_all()`
-remains the one deliberate MARKET-order exception, since its job is
-guaranteed exit, not price control). A failed exit order keeps the position
-tracked for retry next tick rather than silently dropping it.
+`MAX_HOLD_MINUTES` at entry (from the *confirmed fill price*, not the
+requested one — see Fill Confirmation above). `ExitManager.check_and_exit_all()`
+runs at the top of every loop tick, **before** any new entries are
+considered — closing existing risk always takes priority over opening new
+risk. Whichever of stop-loss, target, or time-exit triggers first closes the
+position: stop-loss and time-exits use a MARKET order (a resting LIMIT can go
+unfilled through a fast gap while the local store already thinks the
+position is closed — fill certainty beats price control for a protective
+exit), target exits stay LIMIT at current LTP, and the kill switch's
+`flatten_all()` is MARKET for the same reason as stop-loss. A failed exit
+order (the broker call itself errors), a **rejected** fill, or an
+**ambiguous** (unconfirmed) fill all keep the position tracked for retry
+next tick rather than silently dropping it or booking P&L off an unconfirmed
+price.
 
-**Kill switch (`risk_governor.py::flatten_all`)**
+**Kill switch (`risk_governor.py::flatten_all`, `main.py::_kill_switch`)**
 Cancels every open order **and** squares off every open position — not just
-one or the other. Triggered by the daily drawdown breach, or manually via
-Telegram.
+one or the other — then cancels any local GTTs and clears the local
+`PositionStore` for every open position, and sends a Telegram confirmation
+once done. Triggered by the daily drawdown breach, or manually via Telegram
+(`/halt`, `/flatten`); in paper mode the broker calls are skipped entirely
+so a paper session never sends a real cancel/flatten to a live account.
 
 **GTT / exchange-side bracket orders (`gtt_orders.py`, gated off by default)**
 `exits.py`'s stop-loss/target logic only protects a position while this
@@ -262,10 +297,16 @@ No secrets in code. Every setting has a documented default in `.env.example`.
 A missing required variable fails loudly at startup, not mid-loop.
 
 **Tests & CI (`tests/`, `.github/workflows/ci.yml`)**
-52 tests covering risk governor logic, exit-reason branches, portfolio risk
-caps, cost-engine math, reconciliation mismatch detection, watchlist
-resolution priority, retry/backoff behavior, news filtering/caching, auth
-cache round-trips, and Telegram authorization. Runs on every push to `main`.
+117 tests covering risk governor logic, exit-reason branches, portfolio risk
+caps (including the sector concentration cap), cost-engine math,
+reconciliation mismatch detection, watchlist resolution priority,
+retry/backoff behavior, news filtering/caching, auth cache round-trips,
+Telegram authorization and background polling, config validation, structured
+logging, the `/healthz` endpoint, H4/H5 hypothesis branches, and **fill
+confirmation** — filled/rejected/ambiguous outcomes on both the entry and
+exit paths, asserted against confirmed `avg_price` rather than the requested
+LTP — via integration-style coverage of `main._tick` and `exits.ExitManager`.
+Runs on every push to `main`.
 
 ---
 
@@ -291,8 +332,15 @@ cache round-trips, and Telegram authorization. Runs on every push to `main`.
 - Jev shadow-mode logging hasn't accumulated a real sample yet — `calibration.py`
   is built and tested, but needs actual paper-trading volume before its
   output means anything (see `docs/INTELLIGENCE_ROADMAP.md`).
-- No backtesting harness.
-- No GTT/exchange-side bracket orders — exits are client-side (see Roadmap).
+- H4/H5 hypothesis testing (`hypothesis.py`, `strategies.py`) has only been
+  run against synthetic price series so far — needs real historical NSE
+  OHLCV data before its kill-criteria verdicts mean anything.
+- Metrics/dashboard (live P&L, open exposure, win rate, Jev calibration
+  drift) — not started.
+- Multi-instrument, multi-strategy support — currently one strategy, one
+  signal type per symbol.
+- Secrets management beyond `.env` — not started; fine for local/paper use,
+  needs revisiting before this runs unattended on a real server long-term.
 - See `docs/INTELLIGENCE_ROADMAP.md` for the much larger backlog of data,
   hypotheses, and algorithms behind the trading intelligence itself, as
   opposed to the infrastructure around it.
@@ -316,25 +364,54 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 ### P1 — before real capital — all done
 
 - [x] Statutory cost engine (`costs.py`) — net P&L now logged alongside gross on every exit *(v4)*
-- [x] Portfolio-level risk (`portfolio_risk.py`) — max concurrent positions + max deployed capital *(v4)*
-- [x] Order/position reconciliation loop (`reconciliation.py`) — runs every 60s, alerts on mismatch, does not auto-correct *(v4)*
+- [x] Portfolio-level risk (`portfolio_risk.py`) — max concurrent positions + max deployed capital, plus a per-sector concentration cap (`MAX_SECTOR_CAPITAL_PCT`, `sectors.py`) *(v4, sector cap added v9)*
+- [x] Order/position reconciliation loop (`reconciliation.py`) — runs every 60s, alerts on mismatch, does not auto-correct; skipped in paper mode *(v4, paper-mode gate v8)*
 - [x] Reconnect/backoff for the market-data feed and for LTP/Jev reads *(v3)*
 - [x] Scheduled job to score `audit_trail.jsonl` outcomes against logged Jev conviction, validating the 0.80 threshold instead of assuming it -- `calibration.py` built and tested; still needs real trading volume to produce a meaningful result *(v5)*
 - [x] Backtesting harness against historical data, isolated from the live/paper code path -- `backtest.py`, reuses the same exit/cost logic as live trading *(v6)*
 - [x] GTT / bracket orders (`gtt_orders.py`) — exchange-side backup to the client-side stop-loss/target in `exits.py`; gated off by default since the endpoint contract is unconfirmed, same as the WebSocket feed *(v7)*
+- [x] Live-loop correctness fixes: dead slippage collar, dead Telegram kill-switch, mismatched/premature idempotency reservation, paper-mode leakage into real broker calls, stop-loss switched to MARKET *(v8)*
+- [x] **Fill confirmation** — every live order (entry and exit) is confirmed via `wait_for_fill()` before P&L is computed or a position is opened/closed; rejected and ambiguous fills are handled explicitly, never assumed *(v11)*
 
 ### P2 — production hardening
 
-- [ ] Structured logging shipped somewhere durable, not just stdout
+- [x] Structured logging (`slog.py`, JSON to stdout via `LOG_JSON=true`) *(v10)*
+- [x] Health-check endpoint (`health.py`, `GET /healthz` on a daemon thread) *(v10)*
+- [x] Config validation on startup — warns by default, `strict=True` raises before market open *(v9)*
 - [ ] Metrics/dashboard: live P&L, open exposure, win rate, Jev calibration drift over time
-- [ ] Health-check + external uptime monitor, distinct from the Telegram heartbeat
+- [ ] External uptime monitor on top of `/healthz`
 - [ ] Multi-instrument, multi-strategy support (currently one strategy, one signal type)
-- [ ] Config validation on startup — catch a bad `.env` before market open, not mid-loop
 - [ ] Secrets management beyond `.env` once this runs on a real server long-term
 
 ---
 
 ## Changelog
+
+### 2026-09-26 (v11)
+- **Fill confirmation.** Every earlier version of this codebase (mine and
+  Grok's) treated a `200 OK` from `POST /order` as equivalent to a fill —
+  P&L was computed and positions were opened/closed off the *requested*
+  price, with no check for rejection, partial fill, or non-fill at all.
+  `execution_gateway.py` adds `FillResult`, `get_order_status()`,
+  `cancel_order()`, and `wait_for_fill()` (polls the order book to a
+  terminal state or a timeout). Both `main.py`'s entry path and
+  `exits.py`'s exit path now confirm every live order before treating it
+  as done: FILLED uses the confirmed `avg_price`; REJECTED never opens (entry)
+  or keeps the position open for retry (exit); an ambiguous TIMEOUT/NOT_FOUND
+  triggers a best-effort cancel + critical alert on the entry side, and a
+  critical alert with the position left tracked as open (no cancel attempt)
+  on the exit side — `reconciliation.py` remains the systemic backstop for
+  anything that turns out to have filled anyway.
+- This was found during the independent review of Grok's v8-v10 commits: a
+  correctness gap sitting underneath all three of Grok's fixes and mine.
+- Corrected two stale entries in "Known gaps" (backtest engine and GTT had
+  shipped in v6/v7 but were still listed as not started) and rewrote the
+  P1/P2 roadmap checkboxes to credit both authors' work accurately.
+- `docs/ARCHITECTURE.md`'s risk-mitigation table corrected: the "no MARKET
+  orders" row was stale (stop-loss/time-exit/kill-switch use MARKET, by
+  design — see v8/v11), and a new Fill Confirmation row was added.
+- 16 new tests (`tests/test_execution_gateway.py` plus new cases in
+  `test_exits.py` and `test_tick.py`). Full suite: 117/117 passing.
 
 ### 2026-09-26 (v10)
 - P2 healthz: `health.py` serves GET `/healthz` on HEALTH_HOST:HEALTH_PORT

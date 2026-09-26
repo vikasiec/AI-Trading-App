@@ -69,13 +69,15 @@ flowchart TD
 
 | Protocol | Description | Threshold / Policy | Enforced where |
 |---|---|---|---|
-| Price Collars | No MARKET orders | LIMIT only; reject if LTP has moved >0.15% since the score was computed | `RiskGovernor.validate_trade` |
+| Price Collars | Entries and target-exits use LIMIT; stop-loss/time-exits use MARKET | LIMIT for entries/targets; reject entry if LTP (re-fetched *after* the Jev call) has moved >0.15% from the price the signal was scored at. Stop-loss and time-exits deliberately use MARKET instead — a resting LIMIT can go unfilled through a fast gap while the local store already thinks the position is closed; a protective exit prioritizes fill certainty over price control. Kill-switch flatten is also MARKET, for the same reason. | `RiskGovernor.validate_trade` (entries), `exits.py::ExitManager._execute_exit` (exits) |
+| Fill Confirmation | Order acceptance ≠ order fill | Every live order is confirmed via `ExecutionGateway.wait_for_fill()` (polls the order book to a terminal state or timeout) before P&L is computed or a position is marked closed/opened. A rejected fill is never opened/kept; an ambiguous (timeout/not-found) entry fill triggers a best-effort cancel plus a critical alert and the position is never stored; an ambiguous exit fill is deliberately left tracked as still-open (no cancel attempt — cancelling a possibly-already-filled SELL is its own failure mode) with a critical alert, and `reconciliation.py` is the backstop against real drift. | `ExecutionGateway.wait_for_fill`, used in `main.py`'s entry path and `exits.py`'s exit path |
 | Position Sizing | Dynamic, from live equity | Min(₹50,000, 2% of equity) | `RiskGovernor.size_order`, reads `/funds` |
-| Kill Switch | Daily drawdown circuit breaker | Trigger at 2% daily loss → cancel all orders **and** square off positions | `RiskGovernor.check_drawdown`, called every loop tick |
+| Kill Switch | Daily drawdown circuit breaker | Trigger at 2% daily loss → cancel all orders **and** square off positions (skipped in paper mode — no real API calls) | `RiskGovernor.check_drawdown`, called every loop tick |
 | Rate Governance | Throttle broker + Jev calls | Respect INDstocks' published per-endpoint limits (see API Conventions) | `RateLimiter` wrapper on both clients |
-| Idempotency | Prevent duplicate orders | `security_id` + 1-minute window key, persisted to disk/DB | `RiskGovernor.validate_trade`, rebuilt from `/order-book` on boot |
+| Idempotency | Prevent duplicate orders | `security_id` + 1-minute window key, persisted to disk/DB; reserved only after a confirmed fill (`mark_executed`), not at approval time | `RiskGovernor.validate_trade` / `mark_executed`, rebuilt from `/order-book` on boot via `RiskGovernor.window_key()` |
+| Portfolio Risk | Cap concurrent exposure | Max concurrent positions, max deployed capital %, per-sector concentration cap | `portfolio_risk.check_portfolio_risk`, `sectors.py` |
 | Tick Size | Reject invalid prices before sending | Round to instrument tick size from Instruments Master | `ExecutionGateway.place_limit_order` |
-| Kill-switch auth | Only the account owner can halt via Telegram | Whitelisted `chat_id` | `TelegramAlertNotifier.handle_emergency` |
+| Kill-switch auth | Only the account owner can halt via Telegram | Whitelisted `chat_id`; inbound polling runs in a background daemon thread so `/halt` is actually live | `TelegramAlertNotifier.handle_emergency`, `start_background_polling` |
 
 ---
 
