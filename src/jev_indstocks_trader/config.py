@@ -96,6 +96,9 @@ class AppConfig:
     news_cache_ttl_s: float = field(default_factory=lambda: float(_optional("NEWS_CACHE_TTL_S", "300")))
     websocket_enabled: bool = field(default_factory=lambda: _optional("WEBSOCKET_ENABLED", "false").lower() == "true")
     websocket_url: str = field(default_factory=lambda: _optional("INDSTOCKS_WEBSOCKET_URL", "wss://api.indstocks.com/market/stream"))
+    log_json: bool = field(default_factory=lambda: _optional("LOG_JSON", "false").lower() == "true")
+    health_host: str = field(default_factory=lambda: _optional("HEALTH_HOST", "127.0.0.1"))
+    health_port: int = field(default_factory=lambda: int(_optional("HEALTH_PORT", "8080")))
 
 
 def validate_config(cfg: AppConfig) -> list[str]:

@@ -336,6 +336,12 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 
 ## Changelog
 
+### 2026-09-26 (v10)
+- P2 healthz: `health.py` serves GET `/healthz` on HEALTH_HOST:HEALTH_PORT
+  (default 127.0.0.1:8080) from a daemon thread in `run_loop`.
+- P2 structured logs: `slog.py` + `LOG_JSON=true`.
+- H5 constructed-dip series test so mean-reversion is exercised like H4.
+
 ### 2026-09-26 (v9)
 - Roadmap item 5: H4/H5 hypothesis harness. `strategies.py` (momentum,
   mean-reversion, random baseline), `hypothesis.py` (survive iff net P&L

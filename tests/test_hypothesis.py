@@ -51,6 +51,20 @@ def test_mean_reversion_rejects_at_vwap():
     assert fn(_bars(closes)) is False
 
 
+def test_h5_fires_on_constructed_dip_series():
+    # oscillate around 100 with periodic 3% dips so mean-reversion enters
+    closes = []
+    for cycle in range(8):
+        closes.extend([100.0] * 12)
+        closes.extend([99.0, 98.0, 97.0, 97.5, 98.5, 99.5])
+    verdict = evaluate_vs_baseline(
+        "H5", _bars(closes),
+        mean_reversion_long(lookback=10, deviation_pct=0.015),
+        qty=10, max_hold_bars=6, baseline_every_n=40,
+    )
+    assert verdict.strategy_result.num_trades >= 1
+
+
 def test_h4_survives_on_constructed_trend():
     # strong trend so momentum should print more net than a sparse random baseline
     closes = [100 + i * 0.4 for i in range(80)]

@@ -24,6 +24,8 @@ from dotenv import load_dotenv
 from . import auth
 from .audit import AuditTrail
 from .config import load_config, validate_config
+from .health import build_payload, start_health_server
+from .slog import configure_logging
 from .costs import CostRates
 from .execution_gateway import ExecutionGateway
 from .exits import ExitManager
@@ -41,13 +43,13 @@ from .risk_governor import RiskGovernor
 from .telegram_alerts import TelegramAlertNotifier
 from .watchlist import load_watchlist
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
 def run_loop(poll_interval_s: float = 1.0) -> None:
     load_dotenv()
     cfg = load_config()
+    configure_logging(json_mode=cfg.log_json)
     for warning in validate_config(cfg):
         logger.warning("config: %s", warning)
 
@@ -118,6 +120,21 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     open_count = len(position_store.list_open())
     if open_count:
         logger.info("Resuming with %d open position(s) from a previous run.", open_count)
+
+    started_at = time.time()
+    try:
+        start_health_server(
+            lambda: build_payload(
+                paper_trading=cfg.risk.paper_trading,
+                open_positions=len(position_store.list_open()),
+                watchlist_n=len(watchlist),
+                started_at=started_at,
+            ),
+            host=cfg.health_host,
+            port=cfg.health_port,
+        )
+    except OSError:
+        logger.exception("Could not bind healthz on %s:%s", cfg.health_host, cfg.health_port)
 
     logger.info("Trading loop starting. Ctrl+C to stop.")
     try:
