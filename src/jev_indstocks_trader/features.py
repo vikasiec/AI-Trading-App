@@ -15,6 +15,8 @@ class FeatureSet:
     realized_vol: float | None
     regime: str
     index_day_change_pct: float
+    or_high: float | None = None
+    or_low: float | None = None
 
 
 def _vwap(bars: list[Bar]) -> float | None:
@@ -40,7 +42,12 @@ def _atr_pct(bars: list[Bar]) -> float:
     return sum(ranges) / len(ranges) if ranges else 0.0
 
 
-def compute_features(bars: list[Bar], index_day_change_pct: float = 0.0) -> FeatureSet:
+def compute_features(
+    bars: list[Bar],
+    index_day_change_pct: float = 0.0,
+    or_high: float | None = None,
+    or_low: float | None = None,
+) -> FeatureSet:
     look = bars[-21:] if len(bars) >= 2 else bars
     ret = 0.0
     if len(look) >= 2 and look[0].close > 0:
@@ -55,6 +62,8 @@ def compute_features(bars: list[Bar], index_day_change_pct: float = 0.0) -> Feat
         realized_vol=realized_vol(bars[-20:] if len(bars) >= 3 else bars),
         regime=classify_regime(bars),
         index_day_change_pct=index_day_change_pct,
+        or_high=or_high,
+        or_low=or_low,
     )
 
 
@@ -66,5 +75,7 @@ def features_block(feat: FeatureSet) -> str:
         f"ATR%: {feat.atr_pct * 100:.2f}%\n"
         f"Realized vol: {vol}\n"
         f"Regime: {feat.regime}\n"
-        f"Index day change: {feat.index_day_change_pct:.2f}%"
+        f"Index day change: {feat.index_day_change_pct:.2f}%\n"
+        f"OR high: {feat.or_high if feat.or_high is not None else 'n/a'}\n"
+        f"OR low: {feat.or_low if feat.or_low is not None else 'n/a'}"
     )

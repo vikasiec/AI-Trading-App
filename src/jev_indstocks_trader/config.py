@@ -83,6 +83,10 @@ class RiskConfig:
     entry_mode: str = field(default_factory=lambda: _optional("ENTRY_MODE", "jev").lower())
     open_skip_minutes: float = field(default_factory=lambda: float(_optional("OPEN_SKIP_MINUTES", "15")))
     index_scrip: str = field(default_factory=lambda: _optional("INDEX_SCRIP", "NSE_26000"))
+    index_veto_pct: float = field(default_factory=lambda: float(_optional("INDEX_VETO_PCT", "-0.8")))
+    index_veto_enabled: bool = field(
+        default_factory=lambda: _optional("INDEX_VETO_ENABLED", "true").lower() == "true"
+    )
 
 
 @dataclass(frozen=True)

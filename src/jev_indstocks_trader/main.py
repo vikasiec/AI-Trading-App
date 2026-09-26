@@ -28,7 +28,8 @@ from .health import build_payload, start_health_server
 from .heartbeat import BrokerHeartbeat
 from .session import minutes_since_open, now_ist, session_phase
 from .bar_cache import BarCache
-from .entry import combine_votes, rule_vote
+from .entry import combine_votes, index_veto, rule_vote
+from .opening_range import OpeningRangeBook
 from .features import compute_features, features_block
 from .jev_client import ConvictionResult
 from .slog import configure_logging
@@ -155,6 +156,7 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     logger.info("Trading loop starting. Ctrl+C to stop. ENTRY_MODE=%s", cfg.risk.entry_mode)
     flattened_on: str | None = None
     bar_cache = BarCache()
+    or_book = OpeningRangeBook()
     try:
         while True:
             if heartbeat.due():
@@ -181,12 +183,18 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
             if not cfg.risk.paper_trading and reconciler.due():
                 reconciler.reconcile()
             exit_manager.check_and_exit_all()
-            mins_open = minutes_since_open()
-            if mins_open is not None and mins_open < cfg.risk.open_skip_minutes:
-                time.sleep(poll_interval_s)
-                continue
-            _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
-                  position_store, watchlist, news_source, tick_cache, bar_cache)
+            or_book.roll_day(today)
+            mins_open = minutes_since_open() if cfg.respect_session else None
+            forming = mins_open is not None and mins_open < cfg.risk.open_skip_minutes
+            index_chg = _read_index_change(gateway, tick_cache, cfg.risk.index_scrip)
+            _tick(
+                cfg, gateway, governor, evaluator, instruments, audit, notifier,
+                position_store, watchlist, news_source, tick_cache, bar_cache,
+                or_book=or_book,
+                form_opening_range=forming,
+                allow_entries=not forming,
+                index_day_change_pct=index_chg,
+            )
             time.sleep(poll_interval_s)
     except KeyboardInterrupt:
         logger.info("Shutdown requested, exiting cleanly.")
@@ -205,8 +213,22 @@ def _get_quote(gateway: ExecutionGateway, tick_cache: LiveTickCache, scrip_code:
     )
 
 
+def _read_index_change(gateway, tick_cache, scrip: str) -> float | None:
+    if not scrip:
+        return None
+    try:
+        q = _get_quote(gateway, tick_cache, scrip)
+        chg = q.get("day_change_pct")
+        return float(chg) if chg is not None else None
+    except Exception:
+        logger.debug("Index quote unavailable for %s", scrip, exc_info=True)
+        return None
+
+
 def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
-          position_store, watchlist, news_source, tick_cache, bar_cache=None) -> None:
+          position_store, watchlist, news_source, tick_cache, bar_cache=None,
+          or_book=None, form_opening_range: bool = False, allow_entries: bool = True,
+          index_day_change_pct: float | None = None) -> None:
     """One iteration: fetch a snapshot per watchlist symbol, score it, and
     (maybe) open a new position. Exit checks run separately, before this,
     in run_loop() -- closing existing risk always happens before opening
@@ -235,9 +257,19 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
         scored_at_price = quote["ltp"]
         if bar_cache is not None:
             bar_cache.update(symbol, scored_at_price, int(quote.get("volume") or 0))
+        if or_book is not None and form_opening_range:
+            or_book.update(symbol, scored_at_price)
         bars = bar_cache.bars(symbol) if bar_cache is not None else []
-        feat = compute_features(bars)
+        rng = or_book.get(symbol) if or_book is not None else None
+        feat = compute_features(
+            bars,
+            index_day_change_pct=index_day_change_pct or 0.0,
+            or_high=rng.high if rng else None,
+            or_low=rng.low if rng else None,
+        )
         vote = rule_vote(bars, feat)
+        if not allow_entries:
+            continue
         headlines = news_source.headlines_for(symbol, instrument.get("name")) if news_source else []
         snapshot = MarketSnapshot(
             symbol=symbol,
@@ -270,6 +302,10 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             jev_ok = True
 
         gate_ok, gate_reason = combine_votes(mode, jev_ok, vote)
+        if getattr(cfg.risk, "index_veto_enabled", False):
+            iv = index_veto(index_day_change_pct, cfg.risk.index_veto_pct)
+            if not iv.allow:
+                gate_ok, gate_reason = False, iv.reason
         if not gate_ok:
             audit.log_decision(
                 security_id=security_id,

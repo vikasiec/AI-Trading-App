@@ -222,7 +222,7 @@ brokers. Grouped by how much they buy you per unit of work.
 | F2 | Distance to session/lookback VWAP | Mean-revert vote + Jev | **Live in context (v17)** |
 | F3 | ATR% / realized vol | Regime, size shrink | **Live in context (v17)** |
 | F4 | Regime label calm/normal/violent | Switches which rule may fire | **Live (v17)** |
-| F5 | Opening-range high/low (first 15 min) | Breakout vs "no trade in open" | Clock skip only (`OPEN_SKIP_MINUTES`). ORH/ORL not stored yet |
+| F5 | Opening-range high/low (first 15 min) | Breakout vs "no trade in open" | **Live:** built during skip window, frozen after; Jev sees ORH/ORL |
 | F6 | Day high / day low / location in range | Breakout vs fade | Not started |
 | F7 | Volume vs 20-bar average | Confirm H4 | Partial (rule uses window volume) |
 | F8 | Gap from prior close | Gap-and-go vs fade-the-gap | Needs prior daily bar |
@@ -231,7 +231,7 @@ brokers. Grouped by how much they buy you per unit of work.
 
 | ID | Feature | Use | Status |
 |---|---|---|---|
-| F9 | Nifty / Bank Nifty day % | Veto stock longs when index is dumping | Config stub only |
+| F9 | Nifty / Bank Nifty day % | Veto stock longs when index is dumping | **Live V7:** `INDEX_VETO_*`; quote miss = no veto |
 | F10 | Nifty vs stock relative strength (stock − index, N days) | Trade leaders, not laggards in a rally | Needs D2 on index + stock |
 | F11 | India VIX level + 5-day change | True regime, not own-bar vol | Not started |
 | F12 | Advance/decline or breadth proxy | Risk-on/off | Not started |
@@ -277,7 +277,7 @@ exists (`entry.combine_votes`). New algos plug in there.
 
 | ID | Algo | Idea | Kill if |
 |---|---|---|---|
-| V5 | **Opening-range breakout** | After 09:30, long only if price holds above first-15-min high with volume | Loses to random after costs on 5-min bars |
+| V5 | **Opening-range breakout** | After skip window, rule may fire `orb_hold` if last >= OR high (not in calm) | Still unproven on real CSVs — paper only |
 | V6 | **VWAP reclaim** | Dip under VWAP, reclaim, then long (not "just below VWAP") | Same as H5; if H5 dies this often dies with it |
 | V7 | **Index veto** | No new stock longs if Nifty ≤ −0.8% on the day | If stock winners cluster on down-Nifty days, veto is harmful |
 | V8 | **Relative strength long** | Stock 5-day return > index 5-day return *and* V2 | Rank is noise on 4 names |
