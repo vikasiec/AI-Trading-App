@@ -35,9 +35,13 @@ what unblocks the most downstream work per unit of effort.
 | D1 | **Audit trail of Jev scores + outcomes** (`audit_trail.jsonl`) | The single most important dataset in the whole system -- every conviction score this bot has ever produced, linked to what actually happened. Without this, "is Jev any good" is unanswerable. | **Already being collected** (`audit.py`), just not yet analyzed |
 | D2 | **Historical OHLCV bars** (per symbol, at least daily, ideally intraday) | Needed to backtest ANY price-based hypothesis before risking capital on it. Currently the only price data the system has is the live tick. | **CSV-loading path done (v6)**; `fetch_from_indstocks()` still a placeholder, same caveat as the Instruments Master and WebSocket gaps |
 | D3 | **Corporate actions / earnings calendar** | Distinguishes "this stock moved because of news" from "this stock moved because of an earnings surprise" -- needed to interpret both Jev's headline-driven context and any news hypothesis | Not started |
-| D4 | **Sector/index classification per symbol** | Needed for any sector-rotation or relative-strength hypothesis, and for a smarter portfolio-risk check (the current `portfolio_risk.py` caps position *count* and *capital*, not sector concentration) | Not started |
-| D5 | **India VIX / market-wide volatility regime** | A single symbol's price action means something different in a calm market vs. a violent one; several hypotheses below need to condition on regime | Not started |
-| D6 | **Options data (PCR, OI, IV)** for index-level sentiment | Lower priority -- useful for a contrarian-sentiment hypothesis, but adds real complexity for something not yet proven to matter | Backlog, not near-term |
+| D4 | **Sector/index classification per symbol** | Needed for sector-rotation, relative strength, and concentration caps | **Static map + cap live** (`sectors.py`, `MAX_SECTOR_CAPITAL_PCT`). Not a living industry feed. |
+| D5 | **India VIX / market-wide volatility regime** | Price action means different things in calm vs violent tape | **D5-lite done** (`regime.py` on own-bar realized vol). India VIX / Nifty realized vol not wired. |
+| D6 | **Options data (PCR, OI, IV)** | Contrarian index sentiment | Backlog — do not start until H1/H4/H5 have real-data verdicts |
+| D7 | **Index weather (Nifty / Bank Nifty LTP + day %)** | Stock longs in a falling index are a different trade | Config stub `INDEX_SCRIP`; quote not yet folded into the live vote |
+| D8 | **Spread / tick / ADV liquidity** | Stops trading names you cannot exit | Not started — use a short liquid watchlist until then |
+| D9 | **Corporate calendar + results dates** | Block or shrink size into results | Not started (was D3) |
+| D10 | **Multi-symbol OHLCV store** | Watchlist backtests and relative strength | **Runner done (v17+):** `scripts/run_watchlist_backtest.py`. You still supply the CSVs. |
 
 **D1 needs nothing new built except an analysis script** -- it's already
 flowing in. That's why it's the first thing this roadmap implements (see
@@ -78,11 +82,12 @@ should be started now.
 | # | Algorithm | Depends on | Purpose |
 |---|---|---|---|
 | A1 | **Calibration transform** (e.g. isotonic regression or simple bucket-lookup) mapping Jev's raw score to a measured probability of profit | H1 confirmed | Replaces the flat 0.80 cutoff with a number that means what it claims to mean |
-| A2 | **Regime detector** (volatility-band or ATR-based classifier) | H6 | Lets the risk governor and any strategy condition behavior on market state instead of using one static rule all the time |
-| A3 | **Momentum strategy module** | H4 confirmed | A second, independent signal source alongside Jev -- reduces single-point-of-failure risk on one model |
-| A4 | **Mean-reversion strategy module** | H5 confirmed | Same rationale as A3, opposite regime |
-| A5 | **Sector-relative-strength ranker** | H7 confirmed | Feeds `watchlist.py` a ranked, rotating list instead of a static one |
-| A6 | **Backtest engine** proper -- event-driven replay of historical bars through the *same* `risk_governor.py` / `exits.py` / `costs.py` code paths the live loop uses, not a separate simplified simulation | D2 | The only trustworthy way to test H4/H5/H7 and any future price-based hypothesis without risking capital; also the only way to validate that a code change to risk/exits logic hasn't silently changed behavior |
+| A2 | **Regime detector** | H6 | **Scaffold live (v9/v17):** `regime.py` + `entry.rule_vote` switches momentum vs mean-revert by label. Not VIX. |
+| A3 | **Momentum strategy module** | H4 confirmed on *real* CSVs | **Code exists** (`strategies.momentum_long`). Live only via `ENTRY_MODE=rule` or `jev_and_rule`. Not proven. |
+| A4 | **Mean-reversion strategy module** | H5 confirmed on *real* CSVs | Same as A3 (`mean_reversion_long`). |
+| A5 | **Sector-relative-strength ranker** | H7 confirmed | Not started. Watchlist is still static. |
+| A6 | **Backtest engine** | D2 | **Done.** Single-file + watchlist CSV runner. Does not replay Jev. |
+| A7 | **Entry-mode combiner** | — | **Done (v17):** `ENTRY_MODE=jev\|rule\|jev_and_rule`. |
 
 **A6 is the actual next infrastructure priority** once D1-derived hypotheses
 (H1, H2, H3) are done -- there is no honest way to test H4/H5/H7 without it.
@@ -171,3 +176,179 @@ close, to avoid same-bar lookahead bias. Reuses the identical exit logic
 that live trading uses, so a backtest result means the same thing a live
 result would under the same rules. Reports gross P&L, net P&L, cost drag,
 win rate, and per-trade detail including which exit rule fired.
+
+---
+
+# Trader Intelligent One
+
+Working name for what this repo is supposed to become: **one trader**,
+not a pile of indicators. Jev is a voter. Rules are voters. The
+**risk governor owns money**. Nothing else may size, halt, or flatten.
+
+```
+DATA  →  FEATURES  →  VOTES  →  COMBINER  →  GOVERNOR  →  EXITS
+                              (Jev, rules,
+                               regime, clock)
+```
+
+If a layer cannot be turned off with one env flag, it does not ship.
+
+---
+
+## Design rules for this trader
+
+1. **Long-only NSE cash** until a short/F&O hypothesis survives its own
+   test. No "just add Bank Nifty options."
+2. **One new vote at a time.** Paper that vote for a week. Then AND it
+   with Jev. Never OR two weak votes first.
+3. **Same exits for every vote** (1% stop, 2% target, time, 15:15
+   flatten) until an exit hypothesis is tested separately.
+4. **Net of `costs.py` or it did not happen.**
+5. **Kill list is allowed to win.** Most ideas below should die. That
+   is the product.
+
+---
+
+## Feature catalog (what the brain can see)
+
+Build these as numbers on `FeatureSet` / Jev `state`, not as new
+brokers. Grouped by how much they buy you per unit of work.
+
+### F-price (do next — cheap, already half-built)
+
+| ID | Feature | Use | Status |
+|---|---|---|---|
+| F1 | Last 20-bar return | Momentum / Jev context | **Live in context (v17)** |
+| F2 | Distance to session/lookback VWAP | Mean-revert vote + Jev | **Live in context (v17)** |
+| F3 | ATR% / realized vol | Regime, size shrink | **Live in context (v17)** |
+| F4 | Regime label calm/normal/violent | Switches which rule may fire | **Live (v17)** |
+| F5 | Opening-range high/low (first 15 min) | Breakout vs "no trade in open" | Clock skip only (`OPEN_SKIP_MINUTES`). ORH/ORL not stored yet |
+| F6 | Day high / day low / location in range | Breakout vs fade | Not started |
+| F7 | Volume vs 20-bar average | Confirm H4 | Partial (rule uses window volume) |
+| F8 | Gap from prior close | Gap-and-go vs fade-the-gap | Needs prior daily bar |
+
+### F-market (index weather)
+
+| ID | Feature | Use | Status |
+|---|---|---|---|
+| F9 | Nifty / Bank Nifty day % | Veto stock longs when index is dumping | Config stub only |
+| F10 | Nifty vs stock relative strength (stock − index, N days) | Trade leaders, not laggards in a rally | Needs D2 on index + stock |
+| F11 | India VIX level + 5-day change | True regime, not own-bar vol | Not started |
+| F12 | Advance/decline or breadth proxy | Risk-on/off | Not started |
+
+### F-event (block size, don't invent alpha)
+
+| ID | Feature | Use | Status |
+|---|---|---|---|
+| F13 | Results date ±1 session | Size → 0 or skip | Not started |
+| F14 | Board / dividend / split | Skip | Not started |
+| F15 | Headline count + tone bucket | H3 enrichment for Jev | Headlines yes, tone no |
+
+### F-microstructure (live quality)
+
+| ID | Feature | Use | Status |
+|---|---|---|---|
+| F16 | Spread vs tick | Do not enter wide names | Not started |
+| F17 | Time-of-day bucket win-rate prior | Size 0 / 0.5 / 1.0 | Needs D1 after paper weeks |
+| F18 | Seconds since last print | Stale quote veto | Tick cache age exists (5s) |
+
+Do **not** add RSI, MACD, Bollinger, Ichimoku, Supertrend as separate
+"algos." If you want a classic oscillator, it is one number on
+`FeatureSet` and one hypothesis. Default is no.
+
+---
+
+## Algorithm catalog (votes that can coexist)
+
+Each algorithm is a **vote**: `allow` + `reason`. The combiner already
+exists (`entry.combine_votes`). New algos plug in there.
+
+### Core (keep)
+
+| ID | Algo | Idea | Live hook |
+|---|---|---|---|
+| V0 | **Governor** | Drawdown, slippage, lot, caps, flatten | Always on. Not optional. |
+| V1 | **Jev long score** | External model on compact state | `ENTRY_MODE=jev` (default) |
+| V2 | **H4 momentum** | Up + volume | `rule` / `jev_and_rule` |
+| V3 | **H5 mean revert** | Below VWAP in calm tape | same |
+| V4 | **Regime router** | Violent→V2, calm→V3 | Inside `rule_vote` |
+
+### Next to design (only after paper D1 or real CSV)
+
+| ID | Algo | Idea | Kill if |
+|---|---|---|---|
+| V5 | **Opening-range breakout** | After 09:30, long only if price holds above first-15-min high with volume | Loses to random after costs on 5-min bars |
+| V6 | **VWAP reclaim** | Dip under VWAP, reclaim, then long (not "just below VWAP") | Same as H5; if H5 dies this often dies with it |
+| V7 | **Index veto** | No new stock longs if Nifty ≤ −0.8% on the day | If stock winners cluster on down-Nifty days, veto is harmful |
+| V8 | **Relative strength long** | Stock 5-day return > index 5-day return *and* V2 | Rank is noise on 4 names |
+| V9 | **News impulse** | First 30 min after a *named* headline, only if V1 high | H3 already tests "any headline"; this is stricter |
+| V10 | **Two-question Jev** | Q1 edge, Q2 "is this noise?" — trade only Q1 high and Q2 low | If Q2 never moves, drop it |
+| V11 | **Calibration sizer** | Map Jev bucket → 0 / 0.5× / 1× size | If buckets flat, size 0 and demote V1 to logger |
+| V12 | **Time-of-day prior** | After ~100 outcomes, mute 09:30–10:00 or 14:45–15:15 if those buckets lose | Needs D1 |
+| V13 | **Earnings blackout** | Flat into results | Process, not alpha |
+| V14 | **Watchlist ranker** | Rank 15 liquid names by RS + ADV; trade top 5 | H7 |
+
+### Explicitly out of scope until cash is boring
+
+| ID | Why not |
+|---|---|
+| Options selling / buying | Different margin, expiry, assignment. New product. |
+| Intraday shorts | Separate borrow/F&O path. |
+| Multi-timeframe ML / LSTM / RL | Will overfit 4 tickers before D1 exists. |
+| Second LLM "debating" Jev | Cost and correlated error. Use V10 on the *same* model first. |
+| Social / Twitter sentiment | Garbage in, latency, policy. |
+| Grid / martingale / averaging down | Conflicts with governor. Never. |
+| Copy-trade / tip-channel parser | Not this trader. |
+
+---
+
+## Combiner policy (how votes become a trade)
+
+Recommended paper ladder — change **one** thing per week:
+
+| Week | `ENTRY_MODE` | Extra flags | Question |
+|---|---|---|---|
+| 1 | `jev` | `OPEN_SKIP_MINUTES=15` | Does Jev fire at all? Audit fills? |
+| 2 | `jev` | same | H1/H2/H3 on that week's file |
+| 3 | `rule` | same | Do V2/V3 fire on *live* minute bars? |
+| 4 | `jev_and_rule` | same | Does AND cut losers more than winners? |
+| 5+ | `jev_and_rule` | add V7 index veto when coded | One veto at a time |
+
+Never enable V5–V14 on live. Paper first. Promote only if
+`evaluate_vs_baseline` or calibration says **survive**.
+
+---
+
+## Build sequence (this is the actual todo)
+
+Update this list when something ships. Do not jump.
+
+1. **You:** 5–10 paper sessions, `ENTRY_MODE=jev`, keep `audit_trail.jsonl`.
+2. **You:** dump OHLCV CSVs for the watchlist + Nifty into `data/bars/`.
+3. **Run** `run_calibration_report.py` (H1–H3) and
+   `run_watchlist_backtest.py data/bars/` (H4/H5 per name).
+4. **Then code, in order:**
+   1. F5 opening-range high/low stored on the session object
+   2. F9 / V7 index veto (one quote, one bool)
+   3. F8 prior-close gap
+   4. V10 second Jev question
+   5. V11 size-by-bucket once N is not a joke (≥100 closed paper trades)
+   6. V5 ORB as a `StrategyFn` + backtest, *then* optional live vote
+   7. V13 earnings calendar skip
+   8. V14 ranked watchlist
+5. **Only if cash paper is net-positive after costs:** discuss F&O.
+   Not before.
+
+---
+
+## What "intelligent" means here
+
+Not "the model is smart." Intelligent means:
+
+- it **knows when not to trade** (open skip, regime, index veto, earnings)
+- it **measures its own votes** (audit + calibration + watchlist backtest)
+- it **does not let a voter touch size or flatten**
+- it **can fire a voter without rewriting the loop** (`ENTRY_MODE`, `RuleVote`)
+
+That is the whole product. Extra indicators without a kill test make it
+dumber.

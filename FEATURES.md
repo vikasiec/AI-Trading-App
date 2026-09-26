@@ -341,9 +341,10 @@ Runs on every push to `main`.
   signal type per symbol.
 - Secrets management beyond `.env` — not started; fine for local/paper use,
   needs revisiting before this runs unattended on a real server long-term.
-- See `docs/INTELLIGENCE_ROADMAP.md` for the much larger backlog of data,
-  hypotheses, and algorithms behind the trading intelligence itself, as
-  opposed to the infrastructure around it.
+- See `docs/INTELLIGENCE_ROADMAP.md` (**Trader Intelligent One** section)
+  for the feature catalog (F1–F18), vote catalog (V0–V14), combiner
+  policy, and the only allowed build order. Plumbing is this file;
+  intelligence lives there.
 
 ---
 
