@@ -28,6 +28,7 @@ class ConvictionResult:
     score: float          # probability-weighted level index (see Jev docs for `Score` semantics)
     confidence: float     # 0-1, calibrated confidence in this specific answer
     raw: dict              # full response payload, kept for the audit log
+    noise_score: float = 0.0  # V10: how noisy / unreliable the tape+news look
 
 
 class JevEvaluator:
@@ -58,7 +59,21 @@ class JevEvaluator:
                         "Moderate edge",
                         "Strong edge",
                     ],
-                }
+                },
+                "noise": {
+                    "type": "score",
+                    "instructions": (
+                        "Rate how noisy or unreliable this state is "
+                        "(auction chop, conflicting headlines, missing data). "
+                        "High score means do not trust a long."
+                    ),
+                    "criteria": [
+                        "Clean tape",
+                        "Mild noise",
+                        "Noisy",
+                        "Untradeable noise",
+                    ],
+                },
             },
         }
         resp = self.session.post(
@@ -69,8 +84,15 @@ class JevEvaluator:
         )
         resp.raise_for_status()
         body = resp.json()
-        answer = body["answers"]["conviction"]
-        return ConvictionResult(score=answer["score"], confidence=answer["confidence"], raw=body)
+        answers = body.get("answers") or {}
+        answer = answers["conviction"]
+        noise = answers.get("noise") or {}
+        return ConvictionResult(
+            score=answer["score"],
+            confidence=answer["confidence"],
+            raw=body,
+            noise_score=float(noise.get("score") or 0.0),
+        )
 
     def passes_threshold(self, result: ConvictionResult) -> bool:
         return (

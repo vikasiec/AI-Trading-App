@@ -28,7 +28,8 @@ from .health import build_payload, start_health_server
 from .heartbeat import BrokerHeartbeat
 from .session import minutes_since_open, now_ist, session_phase
 from .bar_cache import BarCache
-from .entry import combine_votes, index_veto, rule_vote
+from .entry import combine_votes, gap_veto, index_veto, rule_vote
+from .gaps import GapBook
 from .opening_range import OpeningRangeBook
 from .features import compute_features, features_block
 from .jev_client import ConvictionResult
@@ -157,6 +158,7 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     flattened_on: str | None = None
     bar_cache = BarCache()
     or_book = OpeningRangeBook()
+    gap_book = GapBook()
     try:
         while True:
             if heartbeat.due():
@@ -184,6 +186,7 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
                 reconciler.reconcile()
             exit_manager.check_and_exit_all()
             or_book.roll_day(today)
+            gap_book.roll_day(today)
             mins_open = minutes_since_open() if cfg.respect_session else None
             forming = mins_open is not None and mins_open < cfg.risk.open_skip_minutes
             index_chg = _read_index_change(gateway, tick_cache, cfg.risk.index_scrip)
@@ -191,6 +194,7 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
                 cfg, gateway, governor, evaluator, instruments, audit, notifier,
                 position_store, watchlist, news_source, tick_cache, bar_cache,
                 or_book=or_book,
+                gap_book=gap_book,
                 form_opening_range=forming,
                 allow_entries=not forming,
                 index_day_change_pct=index_chg,
@@ -227,7 +231,7 @@ def _read_index_change(gateway, tick_cache, scrip: str) -> float | None:
 
 def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
           position_store, watchlist, news_source, tick_cache, bar_cache=None,
-          or_book=None, form_opening_range: bool = False, allow_entries: bool = True,
+          or_book=None, gap_book=None, form_opening_range: bool = False, allow_entries: bool = True,
           index_day_change_pct: float | None = None) -> None:
     """One iteration: fetch a snapshot per watchlist symbol, score it, and
     (maybe) open a new position. Exit checks run separately, before this,
@@ -259,6 +263,8 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             bar_cache.update(symbol, scored_at_price, int(quote.get("volume") or 0))
         if or_book is not None and form_opening_range:
             or_book.update(symbol, scored_at_price)
+        if gap_book is not None:
+            gap_book.observe(symbol, quote.get("day_change_pct"))
         bars = bar_cache.bars(symbol) if bar_cache is not None else []
         rng = or_book.get(symbol) if or_book is not None else None
         feat = compute_features(
@@ -266,6 +272,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             index_day_change_pct=index_day_change_pct or 0.0,
             or_high=rng.high if rng else None,
             or_low=rng.low if rng else None,
+            gap_pct=gap_book.get(symbol) if gap_book is not None else None,
         )
         vote = rule_vote(bars, feat)
         if not allow_entries:
@@ -292,6 +299,8 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                     result.score >= cfg.risk.min_conviction
                     and result.confidence >= cfg.risk.min_confidence
                 )
+                if getattr(cfg.jev, "noise_veto", False) and result.noise_score >= cfg.jev.noise_threshold:
+                    jev_ok = False
             except Exception:
                 logger.exception("Jev scoring failed for %s after retries, skipping this tick", symbol)
                 continue
@@ -306,6 +315,9 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             iv = index_veto(index_day_change_pct, cfg.risk.index_veto_pct)
             if not iv.allow:
                 gate_ok, gate_reason = False, iv.reason
+        gv = gap_veto(feat.gap_pct, getattr(cfg.risk, "gap_skip_abs_pct", 0.0))
+        if not gv.allow:
+            gate_ok, gate_reason = False, gv.reason
         if not gate_ok:
             audit.log_decision(
                 security_id=security_id,

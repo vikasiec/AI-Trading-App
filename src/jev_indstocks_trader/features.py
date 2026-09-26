@@ -17,6 +17,7 @@ class FeatureSet:
     index_day_change_pct: float
     or_high: float | None = None
     or_low: float | None = None
+    gap_pct: float | None = None
 
 
 def _vwap(bars: list[Bar]) -> float | None:
@@ -47,6 +48,7 @@ def compute_features(
     index_day_change_pct: float = 0.0,
     or_high: float | None = None,
     or_low: float | None = None,
+    gap_pct: float | None = None,
 ) -> FeatureSet:
     look = bars[-21:] if len(bars) >= 2 else bars
     ret = 0.0
@@ -64,6 +66,7 @@ def compute_features(
         index_day_change_pct=index_day_change_pct,
         or_high=or_high,
         or_low=or_low,
+        gap_pct=gap_pct,
     )
 
 
@@ -77,5 +80,6 @@ def features_block(feat: FeatureSet) -> str:
         f"Regime: {feat.regime}\n"
         f"Index day change: {feat.index_day_change_pct:.2f}%\n"
         f"OR high: {feat.or_high if feat.or_high is not None else 'n/a'}\n"
-        f"OR low: {feat.or_low if feat.or_low is not None else 'n/a'}"
+        f"OR low: {feat.or_low if feat.or_low is not None else 'n/a'}\n"
+        f"Gap vs prior close: {feat.gap_pct if feat.gap_pct is not None else 'n/a'}%"
     )

@@ -43,6 +43,14 @@ def rule_vote(bars: list[Bar], feat: FeatureSet) -> RuleVote:
     return RuleVote(False, "no_rule")
 
 
+def gap_veto(gap_pct: float | None, abs_limit: float) -> RuleVote:
+    if gap_pct is None or abs_limit <= 0:
+        return RuleVote(True, "gap_unknown")
+    if abs(gap_pct) >= abs_limit:
+        return RuleVote(False, f"gap_{gap_pct:.2f}")
+    return RuleVote(True, "gap_ok")
+
+
 def index_veto(index_day_change_pct: float | None, threshold_pct: float) -> RuleVote:
     """V7: block new longs when the index is down more than threshold (e.g. -0.8)."""
     if index_day_change_pct is None:

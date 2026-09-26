@@ -44,6 +44,8 @@ class JevConfig:
     conviction_threshold: float = field(default_factory=lambda: float(_optional("JEV_CONVICTION_THRESHOLD", "0.80")))
     confidence_threshold: float = field(default_factory=lambda: float(_optional("JEV_CONFIDENCE_THRESHOLD", "0.60")))
     request_timeout_s: float = field(default_factory=lambda: float(_optional("JEV_TIMEOUT_S", "2.0")))
+    noise_threshold: float = field(default_factory=lambda: float(_optional("JEV_NOISE_THRESHOLD", "0.70")))
+    noise_veto: bool = field(default_factory=lambda: _optional("JEV_NOISE_VETO", "true").lower() == "true")
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,7 @@ class RiskConfig:
     index_veto_enabled: bool = field(
         default_factory=lambda: _optional("INDEX_VETO_ENABLED", "true").lower() == "true"
     )
+    gap_skip_abs_pct: float = field(default_factory=lambda: float(_optional("GAP_SKIP_ABS_PCT", "3.0")))
 
 
 @dataclass(frozen=True)
