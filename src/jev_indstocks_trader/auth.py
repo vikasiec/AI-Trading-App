@@ -46,7 +46,10 @@ class INDstocksAuth:
         )
         resp.raise_for_status()
         body = resp.json()
-        token = body["data"]["token"]
+        if isinstance(body.get("data"), dict):
+            token = body["data"]["token"]
+        else:
+            token = body["token"]
         self._write_cache(token)
         logger.info("INDstocks token refreshed, cached at %s", self.cfg.token_cache_path)
         return token
