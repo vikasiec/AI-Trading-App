@@ -132,7 +132,7 @@ def test_tick_rejected_fill_does_not_store_position(tmp_path, mocker):
     assert store.list_open() == []
 
 
-def test_tick_ambiguous_fill_cancels_and_does_not_store(tmp_path, mocker):
+def test_tick_ambiguous_fill_cancels_and_marks_executed(tmp_path, mocker):
     cfg, gateway, governor, evaluator, instruments, audit, notifier, store, cache = _setup(
         tmp_path, mocker, paper=False
     )
@@ -142,7 +142,7 @@ def test_tick_ambiguous_fill_cancels_and_does_not_store(tmp_path, mocker):
           store, ["RELIANCE"], None, cache)
 
     gateway.cancel_order.assert_called_once_with("OID1")
-    governor.mark_executed.assert_not_called()
+    governor.mark_executed.assert_called_once_with("2885")
     assert store.list_open() == []
     notifier.send_critical_alert.assert_called_once()
 

@@ -41,6 +41,7 @@ class BrokerHeartbeat:
         self.consecutive_failures = 0
         self.last_ok = False
         self._flattened_this_outage = False
+        self._flatten_confirmed_clean = False
 
     def due(self) -> bool:
         return (time.time() - self._last_run) >= self.interval_s
@@ -72,14 +73,21 @@ class BrokerHeartbeat:
                 logger.critical("Heartbeat grace exceeded — flattening")
                 try:
                     self.flatten_fn()
+                    self._flattened_this_outage = True
                 except Exception:
-                    logger.exception("Heartbeat flatten failed")
-                self._flattened_this_outage = True
+                    logger.exception("Heartbeat flatten failed — will retry next ping")
             return False
 
         if self.consecutive_failures:
             logger.info("Heartbeat recovered after %d failures", self.consecutive_failures)
+            if self.flatten_on_outage and self.flatten_fn is not None and not self._flatten_confirmed_clean:
+                logger.warning("Recovery after outage — re-checking flatten state")
+                try:
+                    self.flatten_fn()
+                except Exception:
+                    logger.exception("Post-recovery flatten check failed")
         self.consecutive_failures = 0
         self.last_ok = True
         self._flattened_this_outage = False
+        self._flatten_confirmed_clean = False
         return True

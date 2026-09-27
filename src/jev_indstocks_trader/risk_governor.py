@@ -36,6 +36,7 @@ class RiskGovernor:
         self.cfg = indstocks_cfg
         self.risk_cfg = risk_cfg
         self.auth_headers_fn = auth_headers_fn
+        self._order_book_loaded = False
         self.executed_keys: set[str] = self._load_idempotency_state()
 
     # -- idempotency -----------------------------------------------------
@@ -74,9 +75,11 @@ class RiskGovernor:
                 else:
                     keys.add(self.window_key(str(sid), now))
             logger.info("Idempotency state rebuilt: %d prior orders loaded", len(keys))
+            self._order_book_loaded = True
             return keys
         except requests.RequestException:
-            logger.exception("Could not rebuild idempotency state from order book; starting empty")
+            logger.exception("Could not rebuild idempotency state from order book — new entries blocked until loaded")
+            self._order_book_loaded = False
             return set()
 
     # -- drawdown ----------------------------------------------------------
@@ -108,6 +111,11 @@ class RiskGovernor:
         confidence: float,
     ) -> tuple[bool, str]:
         """Returns (approved, reason). reason is always populated for the audit log."""
+        if not self._order_book_loaded:
+            self.executed_keys = self._load_idempotency_state()
+            if not self._order_book_loaded:
+                return False, "order_book_unavailable"
+
         drawdown = self.get_drawdown_pct()
         if drawdown is None:
             return False, "funds_unreadable"

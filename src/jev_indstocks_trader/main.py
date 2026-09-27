@@ -30,6 +30,7 @@ from .session import minutes_since_open, now_ist, session_phase
 from .bar_cache import BarCache
 from .entry import combine_votes, gap_veto, index_veto, rule_vote
 from .gaps import GapBook
+from .jev_counter import JevDailyCounter
 from .opening_range import OpeningRangeBook
 from .features import compute_atr_stops, compute_features, features_block
 from .jev_client import ConvictionResult
@@ -58,8 +59,14 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     load_dotenv()
     cfg = load_config()
     configure_logging(json_mode=cfg.log_json)
-    for warning in validate_config(cfg):
+    warnings = validate_config(cfg)
+    blockers = [w for w in warnings if "placeholder" in w.lower()]
+    for warning in warnings:
         logger.warning("config: %s", warning)
+    if blockers:
+        raise RuntimeError(
+            "Refusing to start with unimplemented features enabled: " + "; ".join(blockers)
+        )
 
     def auth_headers_fn():
         return auth.auth_headers(cfg.indstocks)
@@ -169,7 +176,8 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     or_book = OpeningRangeBook()
     gap_book = GapBook()
     jev_last_called: dict[str, float] = {}
-    jev_daily_count = [0]
+    jev_counter = JevDailyCounter()
+    jev_daily_count = [jev_counter.get(now_ist().date().isoformat())]
     jev_daily_date = now_ist().date().isoformat()
     try:
         while True:
@@ -204,7 +212,7 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
             or_book.roll_day(today)
             gap_book.roll_day(today)
             if today != jev_daily_date:
-                logger.info("Jev daily count reset (yesterday: %d calls)", jev_daily_count[0])
+                jev_counter.reset_if_new_day(today)
                 jev_daily_count[0] = 0
                 jev_daily_date = today
                 jev_last_called.clear()
@@ -222,6 +230,7 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
                     index_day_change_pct=index_chg,
                     jev_last_called=jev_last_called,
                     jev_daily_count=jev_daily_count,
+                    jev_counter=jev_counter,
                 )
             except Exception:
                 logger.exception("Tick failed — exits still running, skipping new entries this iteration")
@@ -259,7 +268,8 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
           position_store, watchlist, news_source, tick_cache, bar_cache=None,
           or_book=None, gap_book=None, form_opening_range: bool = False, allow_entries: bool = True,
           index_day_change_pct: float | None = None,
-          jev_last_called: dict | None = None, jev_daily_count: list | None = None) -> None:
+          jev_last_called: dict | None = None, jev_daily_count: list | None = None,
+          jev_counter: JevDailyCounter | None = None) -> None:
     """One iteration: fetch a snapshot per watchlist symbol, score it, and
     (maybe) open a new position. Exit checks run separately, before this,
     in run_loop() -- closing existing risk always happens before opening
@@ -363,9 +373,11 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                     jev_last_called[symbol] = time.monotonic()
                 if jev_daily_count is not None:
                     jev_daily_count[0] += 1
-                    if jev_daily_count[0] == cfg.jev.daily_call_cap:
-                        logger.warning("Jev daily call cap reached: %d", cfg.jev.daily_call_cap)
-                        notifier.send_info(f"⚠️ Jev daily call cap reached ({cfg.jev.daily_call_cap}). No more Jev scoring today.")
+                if jev_counter is not None:
+                    jev_counter.increment(now_ist().date().isoformat())
+                if jev_daily_count is not None and jev_daily_count[0] == cfg.jev.daily_call_cap:
+                    logger.warning("Jev daily call cap reached: %d", cfg.jev.daily_call_cap)
+                    notifier.send_info(f"⚠️ Jev daily call cap reached ({cfg.jev.daily_call_cap}). No more Jev scoring today.")
             latency_ms = (time.monotonic() - t0) * 1000
         else:
             result = ConvictionResult(score=1.0, confidence=1.0, raw={"mode": "rule"})
@@ -460,25 +472,30 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                             action = "SKIP"
                             reason = f"order_{fill.status.lower()}"
                         elif order_id:
-                            # TIMEOUT / NOT_FOUND: genuinely ambiguous. Best-effort cancel
-                            # so we don't end up with an untracked fill, then alert a human
-                            # -- reconciliation.py is the backstop if it filled anyway.
-                            logger.error(
-                                "Order %s for %s did not reach a terminal state (%s) -- "
-                                "attempting cancel and alerting", order_id, symbol, fill.status,
-                            )
+                            # TIMEOUT / NOT_FOUND: ambiguous. Check if any qty filled.
                             try:
                                 gateway.cancel_order(order_id)
                             except Exception:
                                 logger.exception("Best-effort cancel of ambiguous order %s failed", order_id)
-                            notifier.send_critical_alert(
-                                f"AMBIGUOUS FILL: {symbol} order {order_id} status={fill.status} "
-                                f"-- attempted cancel, verify manually against the broker order book"
-                            )
-                            approved = False
-                            qty = 0
-                            action = "SKIP"
-                            reason = "order_fill_unresolved"
+                            if fill.filled_qty and fill.filled_qty > 0:
+                                fill_price = fill.avg_price or live_ltp
+                                qty = fill.filled_qty
+                                action = "BUY (timeout-partial)"
+                                governor.mark_executed(security_id)
+                                notifier.send_critical_alert(
+                                    f"TIMEOUT PARTIAL BUY {symbol}: {qty} filled @ {fill_price}, "
+                                    f"cancelled residual order {order_id} — verify book"
+                                )
+                            else:
+                                governor.mark_executed(security_id)
+                                notifier.send_critical_alert(
+                                    f"AMBIGUOUS FILL: {symbol} order {order_id} status={fill.status} "
+                                    f"-- cancelled, verify manually against broker order book"
+                                )
+                                approved = False
+                                qty = 0
+                                action = "SKIP"
+                                reason = "order_fill_unresolved"
                     except Exception:
                         logger.exception("Order placement failed for %s -- not marking executed", symbol)
                         approved = False

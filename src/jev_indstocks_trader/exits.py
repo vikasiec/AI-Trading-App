@@ -92,6 +92,19 @@ class ExitManager:
         self._execute_exit(position, live_ltp, reason)
 
     def _execute_exit(self, position: Position, live_ltp: float, reason: str) -> None:
+        if not self.paper_trading and position.pending_exit_order_id:
+            prior = self.gateway.get_order_status(position.pending_exit_order_id)
+            if prior is not None:
+                status = str(prior.get("status", "")).upper()
+                if status not in ("REJECTED", "CANCELLED", "CANCELED", "EXPIRED", "FAILED", "ABORTED", "RJ"):
+                    logger.debug(
+                        "Exit order %s for %s still in-flight (status=%s), skipping new exit",
+                        position.pending_exit_order_id, position.security_id, status,
+                    )
+                    return
+            position.pending_exit_order_id = None
+            self.store.add(position)
+
         logger.info(
             "Exiting %s: reason=%s entry=%.2f ltp=%.2f qty=%d",
             position.security_id, reason, position.entry_price, live_ltp, position.qty,
@@ -121,6 +134,8 @@ class ExitManager:
                 order_id = extract_order_id(order)
                 if not order_id:
                     raise RuntimeError(f"exit place-order returned no id: {order}")
+                position.pending_exit_order_id = order_id
+                self.store.add(position)
         except Exception:
             logger.exception(
                 "Exit order FAILED for %s (%s) -- position remains open, will retry next tick",
@@ -135,18 +150,14 @@ class ExitManager:
 
         fill_price = live_ltp
         if not self.paper_trading:
-            # Acceptance is not fill -- confirm before touching the audit trail or
-            # removing the position from the store. Unlike the entry path, we do NOT
-            # attempt a cancel on an ambiguous exit fill: cancelling a SELL that may
-            # have already executed would just produce a confusing second error, and
-            # leaving the position tracked as still-open is the safe default here --
-            # reconciliation.py will catch a real mismatch against the broker.
             fill = self.gateway.wait_for_fill(order_id, timeout_s=3.0, requested_qty=position.qty)
             if fill.status in ("REJECTED", "CANCELLED"):
                 logger.error(
                     "Exit order %s for %s was REJECTED -- position remains open, will retry next tick",
                     order_id, position.security_id,
                 )
+                position.pending_exit_order_id = None
+                self.store.add(position)
                 if self.notifier is not None:
                     self.notifier.send_critical_alert(
                         f"Exit order rejected for {position.security_id} ({reason}, order {order_id}). "
@@ -154,16 +165,40 @@ class ExitManager:
                     )
                 return
             if fill.status in ("TIMEOUT", "NOT_FOUND"):
+                if fill.filled_qty and fill.filled_qty > 0:
+                    closed_qty = fill.filled_qty
+                    fill_price = fill.avg_price or live_ltp
+                    remainder = position.qty - closed_qty
+                    realized_pnl = (fill_price - position.entry_price) * closed_qty
+                    cost = compute_round_trip_cost(
+                        buy_price=position.entry_price, sell_price=fill_price, qty=closed_qty,
+                        product=position.product, rates=self.cost_rates,
+                    )
+                    self.audit.update_outcome(
+                        position.decision_id, fill_price=fill_price,
+                        realized_pnl=realized_pnl, net_pnl=realized_pnl - cost.total,
+                    )
+                    if remainder > 0:
+                        position.qty = remainder
+                        self.store.add(position)
+                    else:
+                        self.store.remove(position.security_id)
+                    if self.notifier is not None:
+                        self.notifier.send_critical_alert(
+                            f"TIMEOUT PARTIAL EXIT {position.security_id}: {closed_qty} filled, "
+                            f"{remainder} remaining — order {order_id}"
+                        )
+                    return
                 logger.error(
                     "Exit order %s for %s did not reach a terminal state (%s) -- "
-                    "leaving position tracked as open, will re-check next tick",
+                    "pending exit tracked, will re-check next tick",
                     order_id, position.security_id, fill.status,
                 )
                 if self.notifier is not None:
                     self.notifier.send_critical_alert(
                         f"AMBIGUOUS EXIT FILL: {position.security_id} order {order_id} "
                         f"status={fill.status} ({reason}) -- verify manually against the "
-                        f"broker order book; position left tracked as open"
+                        f"broker order book; pending exit order tracked"
                     )
                 return
             if fill.status == "PARTIAL":
@@ -174,6 +209,12 @@ class ExitManager:
                     "Partial exit fill for %s: closed %d, remainder %d left open",
                     position.security_id, closed_qty, remainder,
                 )
+                try:
+                    gateway_cancel_ok = True
+                    self.gateway.cancel_order(order_id)
+                except Exception:
+                    gateway_cancel_ok = False
+                    logger.exception("Could not cancel residual exit order %s", order_id)
                 realized_pnl = (fill_price - position.entry_price) * closed_qty
                 cost = compute_round_trip_cost(
                     buy_price=position.entry_price, sell_price=fill_price, qty=closed_qty,
@@ -184,6 +225,7 @@ class ExitManager:
                     realized_pnl=realized_pnl, net_pnl=realized_pnl - cost.total,
                 )
                 position.qty = remainder
+                position.pending_exit_order_id = None if gateway_cancel_ok else order_id
                 self.store.add(position)
                 if self.notifier is not None:
                     self.notifier.send_critical_alert(
@@ -192,6 +234,7 @@ class ExitManager:
                     )
                 return
             fill_price = fill.avg_price or live_ltp
+            position.pending_exit_order_id = None
 
         realized_pnl = (fill_price - position.entry_price) * position.qty
         cost = compute_round_trip_cost(
