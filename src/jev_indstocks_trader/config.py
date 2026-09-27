@@ -32,7 +32,7 @@ class INDstocksConfig:
     totp_secret: str = field(default_factory=lambda: _require("INDSTOCKS_TOTP_SECRET"))
     base_url: str = field(default_factory=lambda: _optional("INDSTOCKS_BASE_URL", "https://api.indstocks.com"))
     token_cache_path: Path = field(
-        default_factory=lambda: Path(_optional("INDSTOCKS_TOKEN_CACHE", str(Path.home() / ".indstocks" / "session_token.json")))
+        default_factory=lambda: Path(os.path.expanduser(_optional("INDSTOCKS_TOKEN_CACHE", str(Path.home() / ".indstocks" / "session_token.json"))))
     )
 
 
@@ -117,9 +117,9 @@ class AppConfig:
     jev: JevConfig = field(default_factory=JevConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
-    audit_log_path: Path = field(default_factory=lambda: Path(_optional("AUDIT_LOG_PATH", "./audit_trail.jsonl")))
+    audit_log_path: Path = field(default_factory=lambda: Path(os.path.expanduser(_optional("AUDIT_LOG_PATH", "./audit_trail.jsonl"))))
     positions_store_path: Path = field(
-        default_factory=lambda: Path(_optional("POSITIONS_STORE_PATH", str(Path.home() / ".indstocks" / "open_positions.json")))
+        default_factory=lambda: Path(os.path.expanduser(_optional("POSITIONS_STORE_PATH", str(Path.home() / ".indstocks" / "open_positions.json"))))
     )
     watchlist_symbols: str = field(default_factory=lambda: _optional("WATCHLIST_SYMBOLS", ""))
     watchlist_file: str = field(default_factory=lambda: _optional("WATCHLIST_FILE", ""))
