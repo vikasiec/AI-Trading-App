@@ -112,7 +112,6 @@ class RiskGovernor:
         if drawdown is None:
             return False, "funds_unreadable"
         if drawdown >= self.risk_cfg.daily_loss_limit_pct:
-            self.flatten_all()
             return False, "daily_drawdown_limit_hit"
 
         if conviction < self.risk_cfg.min_conviction or confidence < self.risk_cfg.min_confidence:
@@ -169,8 +168,13 @@ class RiskGovernor:
                 oid = order.get("id") or order.get("order_id")
                 if not oid:
                     continue
-                resp = requests.delete(
-                    f"{self.cfg.base_url}/order/{oid}", headers=headers, timeout=10
+                segment = order.get("segment", "EQUITY")
+                body_segment = "DERIVATIVE" if str(segment).upper() in ("FNO", "DERIVATIVE", "NFO") else "EQUITY"
+                resp = requests.post(
+                    f"{self.cfg.base_url}/order/cancel",
+                    headers=headers,
+                    json={"order_id": oid, "segment": body_segment},
+                    timeout=10,
                 )
                 if resp.status_code >= 400:
                     logger.error("Kill-switch cancel failed for order %s: %s", oid, resp.text)

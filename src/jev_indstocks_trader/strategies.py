@@ -1,8 +1,8 @@
 """Price-based StrategyFn implementations for hypothesis tests (H4, H5).
 
-These are NOT wired into the live loop. Roadmap rule: a strategy earns a
-live hook only after it beats a random-entry baseline net of costs on
-real history. `scripts/run_hypothesis_tests.py` is the gate.
+These functions are used by entry.rule_vote() in the live loop when
+ENTRY_MODE is 'rule' or 'jev_and_rule'. They also serve as the
+testable units for hypothesis tests in scripts/run_hypothesis_tests.py.
 """
 from __future__ import annotations
 

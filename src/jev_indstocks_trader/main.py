@@ -72,17 +72,26 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     position_store = PositionStore(cfg.positions_store_path)
     def _kill_switch() -> None:
         """Broker flatten + cancel local GTTs + clear the local store."""
+        flatten_ok = True
         if not cfg.risk.paper_trading:
-            governor.flatten_all()
-        for pos in list(position_store.list_open()):
-            if pos.gtt_id and not cfg.risk.paper_trading:
-                try:
-                    gtt_orders.cancel_gtt(cfg.indstocks, auth_headers_fn, pos.gtt_id)
-                except Exception:
-                    logger.exception("Kill switch could not cancel GTT %s", pos.gtt_id)
-            position_store.remove(pos.security_id)
+            try:
+                governor.flatten_all()
+            except Exception:
+                logger.exception("Kill switch flatten failed — keeping local positions tracked")
+                flatten_ok = False
+        if flatten_ok or cfg.risk.paper_trading:
+            for pos in list(position_store.list_open()):
+                if pos.gtt_id and not cfg.risk.paper_trading:
+                    try:
+                        gtt_orders.cancel_gtt(cfg.indstocks, auth_headers_fn, pos.gtt_id)
+                    except Exception:
+                        logger.exception("Kill switch could not cancel GTT %s", pos.gtt_id)
+                position_store.remove(pos.security_id)
         try:
-            notifier.send_critical_alert("Kill switch completed: flatten + local store cleared")
+            msg = "Kill switch completed: flatten + local store cleared"
+            if not flatten_ok:
+                msg = "Kill switch INCOMPLETE: broker flatten failed, local positions kept for exit logic"
+            notifier.send_critical_alert(msg)
         except Exception:
             logger.exception("Could not send kill-switch confirmation")
 
@@ -181,8 +190,12 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
                             governor.flatten_all()
                         except Exception:
                             logger.exception("Broker flatten after session close failed")
-                    notifier.send_critical_alert(f"Session flatten completed ({today})")
-                    flattened_on = today
+                    if not position_store.list_open():
+                        notifier.send_critical_alert(f"Session flatten completed ({today})")
+                        flattened_on = today
+                    else:
+                        logger.warning("Session flatten incomplete — %d positions still open, retrying next tick",
+                                       len(position_store.list_open()))
                 time.sleep(max(poll_interval_s, 5.0))
                 continue
             if not cfg.risk.paper_trading and reconciler.due():
@@ -198,17 +211,20 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
             mins_open = minutes_since_open() if cfg.respect_session else None
             forming = mins_open is not None and mins_open < cfg.risk.open_skip_minutes
             index_chg = _read_index_change(gateway, tick_cache, cfg.risk.index_scrip)
-            _tick(
-                cfg, gateway, governor, evaluator, instruments, audit, notifier,
-                position_store, watchlist, news_source, tick_cache, bar_cache,
-                or_book=or_book,
-                gap_book=gap_book,
-                form_opening_range=forming,
-                allow_entries=not forming,
-                index_day_change_pct=index_chg,
-                jev_last_called=jev_last_called,
-                jev_daily_count=jev_daily_count,
-            )
+            try:
+                _tick(
+                    cfg, gateway, governor, evaluator, instruments, audit, notifier,
+                    position_store, watchlist, news_source, tick_cache, bar_cache,
+                    or_book=or_book,
+                    gap_book=gap_book,
+                    form_opening_range=forming,
+                    allow_entries=not forming,
+                    index_day_change_pct=index_chg,
+                    jev_last_called=jev_last_called,
+                    jev_daily_count=jev_daily_count,
+                )
+            except Exception:
+                logger.exception("Tick failed — exits still running, skipping new entries this iteration")
             time.sleep(poll_interval_s)
     except KeyboardInterrupt:
         logger.info("Shutdown requested, exiting cleanly.")
@@ -383,6 +399,12 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             conviction=result.score,
             confidence=result.confidence,
         )
+
+        if reason == "daily_drawdown_limit_hit" and not cfg.risk.paper_trading:
+            try:
+                governor.flatten_all()
+            except Exception:
+                logger.exception("Drawdown flatten failed")
 
         action = "SKIP"
         order_id = None

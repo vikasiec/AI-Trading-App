@@ -57,6 +57,18 @@ class TelegramConfig:
     owner_user_id: int = field(default_factory=lambda: int(_optional("TELEGRAM_OWNER_USER_ID", _optional("TELEGRAM_OWNER_CHAT_ID", "0"))))
 
 
+def _parse_paper_trading() -> bool:
+    raw = os.environ.get("PAPER_TRADING", "true").strip().lower()
+    if raw == "true":
+        return True
+    if raw == "false":
+        return False
+    raise RuntimeError(
+        f"PAPER_TRADING must be exactly 'true' or 'false', got '{raw}'. "
+        f"Refusing to start with an ambiguous value."
+    )
+
+
 @dataclass(frozen=True)
 class RiskConfig:
     daily_loss_limit_pct: float = field(default_factory=lambda: float(_optional("DAILY_LOSS_LIMIT_PCT", "0.02")))
@@ -64,7 +76,7 @@ class RiskConfig:
     max_position_pct_equity: float = field(default_factory=lambda: float(_optional("MAX_POSITION_PCT_EQUITY", "0.02")))
     max_slippage_pct: float = field(default_factory=lambda: float(_optional("MAX_SLIPPAGE_PCT", "0.0015")))
     tick_size_inr: float = field(default_factory=lambda: float(_optional("DEFAULT_TICK_SIZE_INR", "0.05")))
-    paper_trading: bool = field(default_factory=lambda: _optional("PAPER_TRADING", "true").lower() == "true")
+    paper_trading: bool = field(default_factory=lambda: _parse_paper_trading())
     # Duplicated from JevConfig on purpose: the risk governor should enforce
     # its own floor even if the Jev client's threshold check is bypassed.
     min_conviction: float = field(default_factory=lambda: float(_optional("JEV_CONVICTION_THRESHOLD", "0.80")))

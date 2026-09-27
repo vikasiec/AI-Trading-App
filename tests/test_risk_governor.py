@@ -39,10 +39,9 @@ def test_idempotency_rebuilds_from_order_book(mocker):
     assert "2885_28333333" in gov.executed_keys  # 1700000000 // 60
 
 
-def test_drawdown_blocks_trade_and_triggers_flatten(mocker):
+def test_drawdown_blocks_trade(mocker):
     funds = {"data": {"sod_balance": 100000, "realized_pnl": -3000, "unrealized_pnl": -500}}
     gov, cfg = make_governor(mocker, funds=funds)
-    flatten_mock = mocker.patch.object(gov, "flatten_all")
 
     approved, reason = gov.validate_trade(
         security_id="2885", live_ltp=2450, scored_at_price=2450, conviction=0.9, confidence=0.9
@@ -50,7 +49,6 @@ def test_drawdown_blocks_trade_and_triggers_flatten(mocker):
 
     assert approved is False
     assert reason == "daily_drawdown_limit_hit"
-    flatten_mock.assert_called_once()
 
 
 def test_unreadable_funds_blocks_without_flatten(mocker):

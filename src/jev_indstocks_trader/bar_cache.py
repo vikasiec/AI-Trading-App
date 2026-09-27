@@ -14,13 +14,18 @@ class BarCache:
     def __init__(self, max_bars: int = 80):
         self.max_bars = max_bars
         self._bars: dict[str, list[Bar]] = {}
+        self._last_cum_vol: dict[str, int] = {}
 
     def update(self, symbol: str, ltp: float, volume: int = 0, ts: datetime | None = None) -> None:
         if ltp <= 0:
             return
         ts = ts or datetime.now(timezone.utc)
         minute = ts.replace(second=0, microsecond=0)
-        series = self._bars.setdefault(symbol.upper(), [])
+        key = symbol.upper()
+        prev_cum = self._last_cum_vol.get(key, 0)
+        delta = max(0, volume - prev_cum) if volume >= prev_cum else max(0, volume)
+        self._last_cum_vol[key] = max(volume, prev_cum)
+        series = self._bars.setdefault(key, [])
         if series and series[-1].timestamp == minute:
             last = series[-1]
             series[-1] = Bar(
@@ -29,10 +34,10 @@ class BarCache:
                 high=max(last.high, ltp),
                 low=min(last.low, ltp),
                 close=ltp,
-                volume=last.volume + max(0, volume),
+                volume=last.volume + delta,
             )
         else:
-            series.append(Bar(timestamp=minute, open=ltp, high=ltp, low=ltp, close=ltp, volume=max(0, volume)))
+            series.append(Bar(timestamp=minute, open=ltp, high=ltp, low=ltp, close=ltp, volume=delta))
             if len(series) > self.max_bars:
                 del series[: len(series) - self.max_bars]
 
