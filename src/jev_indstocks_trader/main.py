@@ -159,6 +159,9 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     bar_cache = BarCache()
     or_book = OpeningRangeBook()
     gap_book = GapBook()
+    jev_last_called: dict[str, float] = {}
+    jev_daily_count = [0]
+    jev_daily_date = now_ist().date().isoformat()
     try:
         while True:
             if heartbeat.due():
@@ -187,6 +190,11 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
             exit_manager.check_and_exit_all()
             or_book.roll_day(today)
             gap_book.roll_day(today)
+            if today != jev_daily_date:
+                logger.info("Jev daily count reset (yesterday: %d calls)", jev_daily_count[0])
+                jev_daily_count[0] = 0
+                jev_daily_date = today
+                jev_last_called.clear()
             mins_open = minutes_since_open() if cfg.respect_session else None
             forming = mins_open is not None and mins_open < cfg.risk.open_skip_minutes
             index_chg = _read_index_change(gateway, tick_cache, cfg.risk.index_scrip)
@@ -198,6 +206,8 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
                 form_opening_range=forming,
                 allow_entries=not forming,
                 index_day_change_pct=index_chg,
+                jev_last_called=jev_last_called,
+                jev_daily_count=jev_daily_count,
             )
             time.sleep(poll_interval_s)
     except KeyboardInterrupt:
@@ -232,7 +242,8 @@ def _read_index_change(gateway, tick_cache, scrip: str) -> float | None:
 def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
           position_store, watchlist, news_source, tick_cache, bar_cache=None,
           or_book=None, gap_book=None, form_opening_range: bool = False, allow_entries: bool = True,
-          index_day_change_pct: float | None = None) -> None:
+          index_day_change_pct: float | None = None,
+          jev_last_called: dict | None = None, jev_daily_count: list | None = None) -> None:
     """One iteration: fetch a snapshot per watchlist symbol, score it, and
     (maybe) open a new position. Exit checks run separately, before this,
     in run_loop() -- closing existing risk always happens before opening
@@ -288,13 +299,40 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
         context = build_context(snapshot, extra=features_block(feat))
 
         mode = getattr(cfg.risk, "entry_mode", "jev")
+
+        # --- Pre-Jev vetoes: skip the API call when the outcome is already decided ---
+        if getattr(cfg.risk, "index_veto_enabled", False):
+            iv = index_veto(index_day_change_pct, cfg.risk.index_veto_pct)
+            if not iv.allow:
+                logger.debug("Pre-Jev skip %s: %s", symbol, iv.reason)
+                continue
+        gv = gap_veto(feat.gap_pct, getattr(cfg.risk, "gap_skip_abs_pct", 0.0))
+        if not gv.allow:
+            logger.debug("Pre-Jev skip %s: %s", symbol, gv.reason)
+            continue
+        if mode == "jev_and_rule" and not vote.allow:
+            logger.debug("Pre-Jev skip %s: rule_%s", symbol, vote.reason)
+            continue
+
         result = ConvictionResult(score=0.0, confidence=0.0, raw={})
         latency_ms = 0.0
         jev_ok = False
         if mode != "rule":
+            # Rate-limit: at most one Jev call per symbol per rescore interval
+            now_mono = time.monotonic()
+            if jev_last_called is not None:
+                last = jev_last_called.get(symbol, 0.0)
+                if (now_mono - last) < cfg.jev.rescore_interval_s:
+                    logger.debug("Jev rate-limit skip %s (%.0fs remaining)", symbol,
+                                 cfg.jev.rescore_interval_s - (now_mono - last))
+                    continue
+            # Daily cap
+            if jev_daily_count is not None and jev_daily_count[0] >= cfg.jev.daily_call_cap:
+                logger.debug("Jev daily cap reached (%d), skipping %s", jev_daily_count[0], symbol)
+                continue
             t0 = time.monotonic()
             try:
-                result = retry_with_backoff(lambda: evaluator.evaluate_signal(context), max_retries=2, base_delay_s=0.5)
+                result = retry_with_backoff(lambda: evaluator.evaluate_signal(context), max_retries=1, base_delay_s=0.5)
                 jev_ok = (
                     result.score >= cfg.risk.min_conviction
                     and result.confidence >= cfg.risk.min_confidence
@@ -302,22 +340,22 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                 if getattr(cfg.jev, "noise_veto", False) and result.noise_score >= cfg.jev.noise_threshold:
                     jev_ok = False
             except Exception:
-                logger.exception("Jev scoring failed for %s after retries, skipping this tick", symbol)
+                logger.exception("Jev scoring failed for %s, skipping this tick", symbol)
                 continue
+            finally:
+                if jev_last_called is not None:
+                    jev_last_called[symbol] = time.monotonic()
+                if jev_daily_count is not None:
+                    jev_daily_count[0] += 1
+                    if jev_daily_count[0] == cfg.jev.daily_call_cap:
+                        logger.warning("Jev daily call cap reached: %d", cfg.jev.daily_call_cap)
+                        notifier.send_info(f"⚠️ Jev daily call cap reached ({cfg.jev.daily_call_cap}). No more Jev scoring today.")
             latency_ms = (time.monotonic() - t0) * 1000
         else:
-            # Rule-only: still satisfy the governor floors with a synthetic pass.
             result = ConvictionResult(score=1.0, confidence=1.0, raw={"mode": "rule"})
             jev_ok = True
 
         gate_ok, gate_reason = combine_votes(mode, jev_ok, vote)
-        if getattr(cfg.risk, "index_veto_enabled", False):
-            iv = index_veto(index_day_change_pct, cfg.risk.index_veto_pct)
-            if not iv.allow:
-                gate_ok, gate_reason = False, iv.reason
-        gv = gap_veto(feat.gap_pct, getattr(cfg.risk, "gap_skip_abs_pct", 0.0))
-        if not gv.allow:
-            gate_ok, gate_reason = False, gv.reason
         if not gate_ok:
             audit.log_decision(
                 security_id=security_id,

@@ -46,6 +46,8 @@ class JevConfig:
     request_timeout_s: float = field(default_factory=lambda: float(_optional("JEV_TIMEOUT_S", "2.0")))
     noise_threshold: float = field(default_factory=lambda: float(_optional("JEV_NOISE_THRESHOLD", "0.70")))
     noise_veto: bool = field(default_factory=lambda: _optional("JEV_NOISE_VETO", "true").lower() == "true")
+    rescore_interval_s: float = field(default_factory=lambda: float(_optional("JEV_RESCORE_S", "60")))
+    daily_call_cap: int = field(default_factory=lambda: int(_optional("JEV_DAILY_CALL_CAP", "500")))
 
 
 @dataclass(frozen=True)
