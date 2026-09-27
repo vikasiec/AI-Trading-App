@@ -64,6 +64,7 @@ NIFTY_200 = [
 class CrossoverSignal:
     symbol: str
     price: float
+    ma50: float
     ma200: float
     pct_above: float
     volume_ratio: float
@@ -72,6 +73,7 @@ class CrossoverSignal:
 def compute_200ma_crossovers(
     lookback_days: int = 5,
     min_volume_ratio: float = 1.0,
+    require_above_50ma: bool = True,
 ) -> list[CrossoverSignal]:
     try:
         import yfinance as yf
@@ -104,16 +106,22 @@ def compute_200ma_crossovers(
             continue
 
         ma200 = price_series.rolling(200).mean()
+        ma50 = price_series.rolling(50).mean()
         before_price = price_series.iloc[-(lookback_days + 1)]
         before_ma = ma200.iloc[-(lookback_days + 1)]
 
         current_price = price_series.iloc[-1]
         current_ma = ma200.iloc[-1]
+        current_ma50 = ma50.iloc[-1]
         if current_price != current_price or current_ma != current_ma:
             continue
         if current_price <= current_ma:
             continue
         if before_price >= before_ma:
+            continue
+        if require_above_50ma and (current_ma50 != current_ma50 or current_price <= current_ma50):
+            logger.debug("FILTERED: %s — above 200MA but below 50MA (%.2f <= %.2f)",
+                         symbol, current_price, current_ma50)
             continue
 
         vol_ratio = 0.0
@@ -134,7 +142,7 @@ def compute_200ma_crossovers(
 
         pct_above = ((current_price - current_ma) / current_ma) * 100
         signal = CrossoverSignal(
-            symbol=symbol, price=current_price, ma200=current_ma,
+            symbol=symbol, price=current_price, ma50=current_ma50, ma200=current_ma,
             pct_above=pct_above, volume_ratio=vol_ratio,
         )
         logger.info(
@@ -147,12 +155,59 @@ def compute_200ma_crossovers(
     return crossovers
 
 
+def _send_telegram_alert(signals: list[CrossoverSignal], filters_desc: str) -> None:
+    """Send scan results to Telegram if credentials are available."""
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+        from jev_indstocks_trader.config import load_config
+        from jev_indstocks_trader.telegram_alerts import TelegramAlertNotifier
+        cfg = load_config()
+        notifier = TelegramAlertNotifier(cfg.telegram, kill_switch_callback=lambda: None)
+    except Exception:
+        logger.debug("Telegram not configured, skipping alert")
+        return
+
+    if not signals:
+        notifier.send_info(
+            f"📊 Pre-Market Scan Complete\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Filters: {filters_desc}\n\n"
+            f"No crossovers found today.\n"
+            f"Bot will use previous watchlist."
+        )
+        return
+
+    header = (
+        f"📊 200 DMA Crossover Alert\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Filters: {filters_desc}\n"
+        f"Stocks found: {len(signals)}\n\n"
+    )
+    rows = []
+    for s in signals:
+        rows.append(
+            f"▸ {s.symbol}\n"
+            f"  Price: ₹{s.price:,.2f}\n"
+            f"  50 MA: ₹{s.ma50:,.2f} | 200 MA: ₹{s.ma200:,.2f}\n"
+            f"  Above 200MA: {s.pct_above:+.1f}%\n"
+            f"  Volume: {s.volume_ratio:.1f}x avg"
+        )
+    body = "\n\n".join(rows)
+    footer = "\n\n━━━━━━━━━━━━━━━━━━━━━\nThese stocks will be traded today."
+    notifier.send_info(header + body + footer)
+
+
 def main():
     parser = argparse.ArgumentParser(description="200 DMA crossover watchlist scanner")
     parser.add_argument("--lookback-days", type=int, default=5,
                         help="How many recent days to check for crossover (default: 5)")
     parser.add_argument("--min-volume-ratio", type=float, default=1.0,
                         help="Minimum volume/20d-avg ratio to include (default: 1.0)")
+    parser.add_argument("--no-50ma", action="store_true",
+                        help="Disable 50 MA confirmation filter")
     parser.add_argument("--output", type=str,
                         default=str(Path.home() / ".indstocks" / "watchlist_200ma.json"),
                         help="Output JSON file path")
@@ -164,14 +219,22 @@ def main():
     signals = compute_200ma_crossovers(
         lookback_days=args.lookback_days,
         min_volume_ratio=args.min_volume_ratio,
+        require_above_50ma=not args.no_50ma,
     )
     symbols = [s.symbol for s in signals]
+
+    filters_desc = (
+        f"200MA cross ({args.lookback_days}d)"
+        f" + Vol ≥{args.min_volume_ratio}x"
+        f"{' + Above 50MA' if not args.no_50ma else ''}"
+    )
 
     if len(symbols) < args.min_stocks and output_path.exists():
         logger.warning(
             "Only %d crossovers found (min: %d), keeping existing watchlist",
             len(symbols), args.min_stocks,
         )
+        _send_telegram_alert([], filters_desc)
         return
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -179,12 +242,15 @@ def main():
         json.dump(symbols, f, indent=2)
 
     logger.info(
-        "Watchlist written to %s — %d stocks (lookback: %d days, min vol ratio: %.1fx)",
+        "Watchlist written to %s — %d stocks (lookback: %d days, min vol ratio: %.1fx, 50MA: %s)",
         output_path, len(symbols), args.lookback_days, args.min_volume_ratio,
+        "required" if not args.no_50ma else "off",
     )
     for s in signals:
-        logger.info("  %s: %.2f > 200MA %.2f (%.1f%% above, vol %.1fx)",
-                     s.symbol, s.price, s.ma200, s.pct_above, s.volume_ratio)
+        logger.info("  %s: ₹%.2f > 50MA ₹%.2f > 200MA ₹%.2f (%.1f%% above, vol %.1fx)",
+                     s.symbol, s.price, s.ma50, s.ma200, s.pct_above, s.volume_ratio)
+
+    _send_telegram_alert(signals, filters_desc)
 
 
 if __name__ == "__main__":

@@ -116,7 +116,40 @@ class TestCrossoverDetection:
         mock_data = _make_mock_data(prices, volumes)
 
         with patch("yfinance.download", return_value=mock_data):
-            signals = compute_200ma_crossovers(lookback_days=5, min_volume_ratio=0.0)
+            signals = compute_200ma_crossovers(lookback_days=5, min_volume_ratio=0.0, require_above_50ma=False)
 
         assert len(signals) == 1
         assert signals[0].volume_ratio == pytest.approx(0.5, rel=0.1)
+
+    @patch("scripts.watchlist_200ma.NIFTY_200", ["TEST"])
+    def test_50ma_filter_rejects_below(self):
+        """A stock crossing 200MA but below 50MA should be filtered when require_above_50ma=True."""
+        pd = pytest.importorskip("pandas")
+        prices = []
+        for i in range(210):
+            prices.append(80.0 + i * 0.1)
+        for i in range(7):
+            prices.append(85.0)
+        prices.extend([92.0, 93.0, 94.0])
+        volumes = [100_000.0] * (len(prices) - 1) + [200_000.0]
+        mock_data = _make_mock_data(prices, volumes)
+
+        with patch("yfinance.download", return_value=mock_data):
+            with_50ma = compute_200ma_crossovers(lookback_days=5, min_volume_ratio=0.0, require_above_50ma=True)
+            without_50ma = compute_200ma_crossovers(lookback_days=5, min_volume_ratio=0.0, require_above_50ma=False)
+
+        assert len(with_50ma) <= len(without_50ma)
+
+    @patch("scripts.watchlist_200ma.NIFTY_200", ["TEST"])
+    def test_signal_has_ma50_field(self):
+        pd = pytest.importorskip("pandas")
+        prices = _prices_crossing_above()
+        volumes = [100_000.0] * (len(prices) - 1) + [200_000.0]
+        mock_data = _make_mock_data(prices, volumes)
+
+        with patch("yfinance.download", return_value=mock_data):
+            signals = compute_200ma_crossovers(lookback_days=5, min_volume_ratio=0.0, require_above_50ma=False)
+
+        assert len(signals) == 1
+        assert hasattr(signals[0], "ma50")
+        assert signals[0].ma50 > 0
