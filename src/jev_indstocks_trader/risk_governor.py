@@ -62,7 +62,7 @@ class RiskGovernor:
             resp.raise_for_status()
             keys: set[str] = set()
             now = time.time()
-            for order in resp.json().get("data", []):
+            for order in resp.json().get("data") or []:
                 sid = order.get("security_id") or order.get("name")
                 if not sid:
                     continue
