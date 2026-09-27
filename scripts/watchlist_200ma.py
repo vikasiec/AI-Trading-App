@@ -12,7 +12,7 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -60,7 +60,19 @@ NIFTY_200 = [
 ]
 
 
-def compute_200ma_crossovers(lookback_days: int = 5) -> list[str]:
+@dataclass
+class CrossoverSignal:
+    symbol: str
+    price: float
+    ma200: float
+    pct_above: float
+    volume_ratio: float
+
+
+def compute_200ma_crossovers(
+    lookback_days: int = 5,
+    min_volume_ratio: float = 1.0,
+) -> list[CrossoverSignal]:
     try:
         import yfinance as yf
     except ImportError:
@@ -77,39 +89,61 @@ def compute_200ma_crossovers(lookback_days: int = 5) -> list[str]:
         return []
 
     close = data["Close"] if "Close" in data.columns.get_level_values(0) else data.get("Close")
+    volume = data["Volume"] if "Volume" in data.columns.get_level_values(0) else data.get("Volume")
     if close is None or close.empty:
         logger.error("No price data returned")
         return []
 
-    crossovers = []
+    crossovers: list[CrossoverSignal] = []
     for symbol in NIFTY_200:
         ticker = f"{symbol}.NS"
         if ticker not in close.columns:
             continue
-        series = close[ticker].dropna()
-        if len(series) < 201:
+        price_series = close[ticker].dropna()
+        if len(price_series) < 201:
             continue
 
-        ma200 = series.rolling(200).mean()
-        recent = series.iloc[-lookback_days:]
-        recent_ma = ma200.iloc[-lookback_days:]
-        before_price = series.iloc[-(lookback_days + 1)]
+        ma200 = price_series.rolling(200).mean()
+        before_price = price_series.iloc[-(lookback_days + 1)]
         before_ma = ma200.iloc[-(lookback_days + 1)]
 
-        current_price = series.iloc[-1]
+        current_price = price_series.iloc[-1]
         current_ma = ma200.iloc[-1]
         if current_price != current_price or current_ma != current_ma:
             continue
         if current_price <= current_ma:
             continue
-        if before_price < before_ma:
-            pct_above = ((current_price - current_ma) / current_ma) * 100
-            logger.info(
-                "CROSSOVER: %s — price %.2f crossed above 200MA %.2f (%.1f%% above)",
-                symbol, current_price, current_ma, pct_above,
-            )
-            crossovers.append(symbol)
+        if before_price >= before_ma:
+            continue
 
+        vol_ratio = 0.0
+        if volume is not None and ticker in volume.columns:
+            vol_series = volume[ticker].dropna()
+            if len(vol_series) >= 21:
+                avg_vol_20 = vol_series.iloc[-21:-1].mean()
+                current_vol = vol_series.iloc[-1]
+                if avg_vol_20 > 0:
+                    vol_ratio = current_vol / avg_vol_20
+
+        if vol_ratio < min_volume_ratio:
+            logger.debug(
+                "FILTERED: %s — crossed 200MA but volume ratio %.2fx < %.2fx minimum",
+                symbol, vol_ratio, min_volume_ratio,
+            )
+            continue
+
+        pct_above = ((current_price - current_ma) / current_ma) * 100
+        signal = CrossoverSignal(
+            symbol=symbol, price=current_price, ma200=current_ma,
+            pct_above=pct_above, volume_ratio=vol_ratio,
+        )
+        logger.info(
+            "CROSSOVER: %s — price %.2f > 200MA %.2f (%.1f%% above, vol %.1fx)",
+            symbol, current_price, current_ma, pct_above, vol_ratio,
+        )
+        crossovers.append(signal)
+
+    crossovers.sort(key=lambda s: s.volume_ratio, reverse=True)
     return crossovers
 
 
@@ -117,6 +151,8 @@ def main():
     parser = argparse.ArgumentParser(description="200 DMA crossover watchlist scanner")
     parser.add_argument("--lookback-days", type=int, default=5,
                         help="How many recent days to check for crossover (default: 5)")
+    parser.add_argument("--min-volume-ratio", type=float, default=1.0,
+                        help="Minimum volume/20d-avg ratio to include (default: 1.0)")
     parser.add_argument("--output", type=str,
                         default=str(Path.home() / ".indstocks" / "watchlist_200ma.json"),
                         help="Output JSON file path")
@@ -125,24 +161,30 @@ def main():
     args = parser.parse_args()
 
     output_path = Path(args.output)
-    crossovers = compute_200ma_crossovers(lookback_days=args.lookback_days)
+    signals = compute_200ma_crossovers(
+        lookback_days=args.lookback_days,
+        min_volume_ratio=args.min_volume_ratio,
+    )
+    symbols = [s.symbol for s in signals]
 
-    if len(crossovers) < args.min_stocks and output_path.exists():
+    if len(symbols) < args.min_stocks and output_path.exists():
         logger.warning(
             "Only %d crossovers found (min: %d), keeping existing watchlist",
-            len(crossovers), args.min_stocks,
+            len(symbols), args.min_stocks,
         )
         return
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
-        json.dump(crossovers, f, indent=2)
+        json.dump(symbols, f, indent=2)
 
     logger.info(
-        "Watchlist written to %s — %d stocks crossing above 200MA (lookback: %d days)",
-        output_path, len(crossovers), args.lookback_days,
+        "Watchlist written to %s — %d stocks (lookback: %d days, min vol ratio: %.1fx)",
+        output_path, len(symbols), args.lookback_days, args.min_volume_ratio,
     )
-    logger.info("Symbols: %s", ", ".join(crossovers) if crossovers else "(none)")
+    for s in signals:
+        logger.info("  %s: %.2f > 200MA %.2f (%.1f%% above, vol %.1fx)",
+                     s.symbol, s.price, s.ma200, s.pct_above, s.volume_ratio)
 
 
 if __name__ == "__main__":
