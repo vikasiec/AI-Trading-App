@@ -43,6 +43,20 @@ def _atr_pct(bars: list[Bar]) -> float:
     return sum(ranges) / len(ranges) if ranges else 0.0
 
 
+def compute_atr_stops(
+    atr_pct: float,
+    stop_multiplier: float,
+    target_multiplier: float,
+    floor_pct: float,
+    cap_pct: float,
+) -> tuple[float, float]:
+    """Return (stop_loss_pct, target_pct) clamped between floor and cap."""
+    raw_stop = atr_pct * stop_multiplier
+    stop = max(floor_pct, min(raw_stop, cap_pct))
+    target = stop * (target_multiplier / stop_multiplier)
+    return stop, target
+
+
 def compute_features(
     bars: list[Bar],
     index_day_change_pct: float = 0.0,

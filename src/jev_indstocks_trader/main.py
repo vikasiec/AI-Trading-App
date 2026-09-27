@@ -31,7 +31,7 @@ from .bar_cache import BarCache
 from .entry import combine_votes, gap_veto, index_veto, rule_vote
 from .gaps import GapBook
 from .opening_range import OpeningRangeBook
-from .features import compute_features, features_block
+from .features import compute_atr_stops, compute_features, features_block
 from .jev_client import ConvictionResult
 from .slog import configure_logging
 from .costs import CostRates
@@ -479,8 +479,19 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
         )
 
         if approved and qty > 0:
-            stop_loss_price = fill_price * (1 - cfg.risk.stop_loss_pct)
-            target_price = fill_price * (1 + cfg.risk.target_pct)
+            if cfg.risk.atr_stops_enabled and feat.atr_pct > 0:
+                sl_pct, tp_pct = compute_atr_stops(
+                    feat.atr_pct, cfg.risk.atr_stop_multiplier,
+                    cfg.risk.atr_target_multiplier,
+                    cfg.risk.atr_stop_floor_pct, cfg.risk.atr_stop_cap_pct,
+                )
+                logger.info("ATR stops for %s: ATR=%.3f%% SL=%.2f%% TP=%.2f%%",
+                            symbol, feat.atr_pct * 100, sl_pct * 100, tp_pct * 100)
+            else:
+                sl_pct = cfg.risk.stop_loss_pct
+                tp_pct = cfg.risk.target_pct
+            stop_loss_price = fill_price * (1 - sl_pct)
+            target_price = fill_price * (1 + tp_pct)
 
             gtt_id = None
             if cfg.risk.gtt_enabled and not cfg.risk.paper_trading:

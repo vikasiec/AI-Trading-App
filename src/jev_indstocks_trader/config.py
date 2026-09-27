@@ -73,6 +73,11 @@ class RiskConfig:
     # never held indefinitely.
     stop_loss_pct: float = field(default_factory=lambda: float(_optional("STOP_LOSS_PCT", "0.01")))
     target_pct: float = field(default_factory=lambda: float(_optional("TARGET_PCT", "0.02")))
+    atr_stops_enabled: bool = field(default_factory=lambda: _optional("ATR_STOPS_ENABLED", "false").lower() == "true")
+    atr_stop_multiplier: float = field(default_factory=lambda: float(_optional("ATR_STOP_MULTIPLIER", "2.0")))
+    atr_target_multiplier: float = field(default_factory=lambda: float(_optional("ATR_TARGET_MULTIPLIER", "3.0")))
+    atr_stop_floor_pct: float = field(default_factory=lambda: float(_optional("ATR_STOP_FLOOR_PCT", "0.005")))
+    atr_stop_cap_pct: float = field(default_factory=lambda: float(_optional("ATR_STOP_CAP_PCT", "0.03")))
     max_hold_minutes: float = field(default_factory=lambda: float(_optional("MAX_HOLD_MINUTES", "375")))  # ~one NSE trading day
     brokerage_per_order_inr: float = field(default_factory=lambda: float(_optional("BROKERAGE_PER_ORDER_INR", "5.0")))
     # Portfolio-level risk -- caps across ALL open positions at once, not just one order.
