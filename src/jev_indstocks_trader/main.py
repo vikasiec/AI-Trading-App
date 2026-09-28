@@ -285,25 +285,50 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
     in run_loop() -- closing existing risk always happens before opening
     new risk.
     """
+    # Pre-resolve instruments and batch-fetch quotes to avoid per-symbol API calls.
+    resolved_symbols: list[tuple[str, dict, str]] = []
+    rest_codes: list[str] = []
     for symbol in watchlist:
         try:
             instrument = instruments.resolve(symbol)
         except KeyError:
             logger.warning("Symbol %s not found in instruments master, skipping", symbol)
             continue
-
         security_id = instrument["security_id"]
         if position_store.has_open(security_id):
-            # Already holding this one -- exits own its lifecycle from here, not new entries.
             continue
-
         scrip_code = instrument.get("scrip_code") or f"NSE_{security_id}"
+        ws_tick = tick_cache.get_fresh(scrip_code) if tick_cache else None
+        if ws_tick is None:
+            rest_codes.append(scrip_code)
+        resolved_symbols.append((symbol, instrument, scrip_code))
 
+    batch_quotes: dict[str, dict] = {}
+    if rest_codes:
         try:
-            quote = _get_quote(gateway, tick_cache, scrip_code)
+            batch_quotes = retry_with_backoff(
+                lambda: gateway.get_quotes_batch(rest_codes),
+                max_retries=2, base_delay_s=1.0,
+            )
         except Exception:
-            logger.exception("Could not get quote for %s after retries, skipping this tick", symbol)
-            continue
+            logger.exception("Batch quote fetch failed for %d symbols, falling back to individual", len(rest_codes))
+
+    for symbol, instrument, scrip_code in resolved_symbols:
+        security_id = instrument["security_id"]
+
+        ws_tick = tick_cache.get_fresh(scrip_code) if tick_cache else None
+        if ws_tick is not None:
+            quote = {"ltp": ws_tick, "day_change_pct": 0.0, "volume": 0}
+        elif scrip_code in batch_quotes:
+            quote = batch_quotes[scrip_code]
+        else:
+            try:
+                quote = retry_with_backoff(
+                    lambda: gateway.get_quote(scrip_code), max_retries=3, base_delay_s=0.5,
+                )
+            except Exception:
+                logger.exception("Could not get quote for %s after retries, skipping this tick", symbol)
+                continue
 
         scored_at_price = quote["ltp"]
         if bar_cache is not None:

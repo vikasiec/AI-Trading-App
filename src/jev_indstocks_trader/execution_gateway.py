@@ -192,6 +192,21 @@ class ExecutionGateway:
                     continue
         return 0.0
 
+    @staticmethod
+    def _parse_quote_entry(data: dict) -> dict:
+        ltp = data.get("live_price", data.get("ltp"))
+        change = data.get("day_change_pct", data.get("change_perc", data.get("pChange", 0.0)))
+        volume = data.get("volume", data.get("vol", 0))
+        try:
+            change_f = float(change or 0.0)
+        except (TypeError, ValueError):
+            change_f = 0.0
+        try:
+            vol_i = int(volume or 0)
+        except (TypeError, ValueError):
+            vol_i = 0
+        return {"ltp": float(ltp), "day_change_pct": change_f, "volume": vol_i}
+
     def get_quote(self, scrip_code: str) -> dict:
         """LTP plus whatever extra fields the LTP endpoint happens to include.
 
@@ -206,18 +221,33 @@ class ExecutionGateway:
         )
         resp.raise_for_status()
         data = resp.json()["data"][scrip_code]
-        ltp = data.get("live_price", data.get("ltp"))
-        change = data.get("day_change_pct", data.get("change_perc", data.get("pChange", 0.0)))
-        volume = data.get("volume", data.get("vol", 0))
-        try:
-            change_f = float(change or 0.0)
-        except (TypeError, ValueError):
-            change_f = 0.0
-        try:
-            vol_i = int(volume or 0)
-        except (TypeError, ValueError):
-            vol_i = 0
-        return {"ltp": float(ltp), "day_change_pct": change_f, "volume": vol_i}
+        return self._parse_quote_entry(data)
+
+    def get_quotes_batch(self, scrip_codes: list[str]) -> dict[str, dict]:
+        """Fetch LTP for multiple scrip codes in a single API call.
+
+        Returns {scrip_code: {ltp, day_change_pct, volume}} for each code
+        that the API returned data for. Missing codes are omitted.
+        """
+        if not scrip_codes:
+            return {}
+        joined = ",".join(scrip_codes)
+        resp = requests.get(
+            f"{self.cfg.base_url}/market/quotes/ltp",
+            headers=self.auth_headers_fn(),
+            params={"scrip-codes": joined},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        all_data = resp.json().get("data", {})
+        result: dict[str, dict] = {}
+        for code in scrip_codes:
+            if code in all_data:
+                try:
+                    result[code] = self._parse_quote_entry(all_data[code])
+                except (TypeError, ValueError, KeyError):
+                    pass
+        return result
 
     def get_ltp(self, scrip_code: str) -> float:
         """scrip_code is the exchange-prefixed code, e.g. 'NSE_2885' -- from Instruments Master."""

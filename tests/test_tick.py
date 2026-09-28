@@ -24,7 +24,8 @@ def _setup(tmp_path, mocker, paper=True, quotes=None):
     ])
 
     gateway = mocker.Mock()
-    gateway.get_quote.side_effect = quotes
+    gateway.get_quotes_batch.return_value = {"NSE_2885": quotes[0]}
+    gateway.get_quote.side_effect = quotes[1:]
     gateway.equity_from_funds.return_value = 1_000_000.0
     gateway.get_funds.return_value = {"sod_balance": 1_000_000.0, "available_balance": 1_000_000.0}
     gateway.place_limit_order.return_value = {"data": {"order_id": "OID1"}}
