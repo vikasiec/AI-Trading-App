@@ -77,3 +77,39 @@ def test_due_respects_interval(tmp_path, mocker):
     assert svc.due() is True  # never run yet
     svc.reconcile()
     assert svc.due() is False  # just ran, interval not elapsed
+
+
+def test_detects_qty_mismatch(tmp_path, mocker):
+    """Defect #4: reconciliation must compare qty, not just security_id sets."""
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position("2885"))  # local qty=10
+
+    gateway = mocker.Mock()
+    gateway.get_positions.return_value = [{"security_id": "2885", "net_qty": 3}]
+    notifier = mocker.Mock()
+
+    svc = ReconciliationService(gateway, store, interval_s=60, notifier=notifier)
+    report = svc.reconcile()
+
+    assert report.ok is False
+    assert len(report.qty_mismatches) == 1
+    assert report.qty_mismatches[0].local_qty == 10
+    assert report.qty_mismatches[0].broker_qty == 3
+    assert report.untracked_broker_positions == []
+    assert report.missing_broker_positions == []
+    notifier.send_critical_alert.assert_called_once()
+    assert "qty mismatch" in notifier.send_critical_alert.call_args.args[0]
+
+
+def test_matching_qty_reports_ok(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position("2885"))  # local qty=10
+
+    gateway = mocker.Mock()
+    gateway.get_positions.return_value = [{"security_id": "2885", "net_qty": 10}]
+
+    svc = ReconciliationService(gateway, store, interval_s=60)
+    report = svc.reconcile()
+
+    assert report.ok is True
+    assert report.qty_mismatches == []
