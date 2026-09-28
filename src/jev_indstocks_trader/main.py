@@ -313,6 +313,10 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
         except Exception:
             logger.exception("Batch quote fetch failed for %d symbols, falling back to individual", len(rest_codes))
 
+    tick_skip_reasons: dict[str, int] = {}
+    tick_jev_calls = 0
+    tick_entries = 0
+
     for symbol, instrument, scrip_code in resolved_symbols:
         security_id = instrument["security_id"]
 
@@ -328,6 +332,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                 )
             except Exception:
                 logger.exception("Could not get quote for %s after retries, skipping this tick", symbol)
+                tick_skip_reasons["quote_failed"] = tick_skip_reasons.get("quote_failed", 0) + 1
                 continue
 
         scored_at_price = quote["ltp"]
@@ -348,6 +353,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
         )
         vote = rule_vote(bars, feat)
         if not allow_entries:
+            tick_skip_reasons["forming_or"] = tick_skip_reasons.get("forming_or", 0) + 1
             continue
         headlines = news_source.headlines_for(symbol, instrument.get("name")) if news_source else []
         snapshot = MarketSnapshot(
@@ -366,13 +372,16 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             iv = index_veto(index_day_change_pct, cfg.risk.index_veto_pct)
             if not iv.allow:
                 logger.debug("Pre-Jev skip %s: %s", symbol, iv.reason)
+                tick_skip_reasons[iv.reason] = tick_skip_reasons.get(iv.reason, 0) + 1
                 continue
         gv = gap_veto(feat.gap_pct, getattr(cfg.risk, "gap_skip_abs_pct", 0.0))
         if not gv.allow:
             logger.debug("Pre-Jev skip %s: %s", symbol, gv.reason)
+            tick_skip_reasons[gv.reason] = tick_skip_reasons.get(gv.reason, 0) + 1
             continue
         if mode == "jev_and_rule" and not vote.allow:
             logger.debug("Pre-Jev skip %s: rule_%s", symbol, vote.reason)
+            tick_skip_reasons[f"rule_{vote.reason}"] = tick_skip_reasons.get(f"rule_{vote.reason}", 0) + 1
             continue
 
         result = ConvictionResult(score=0.0, confidence=0.0, raw={})
@@ -391,6 +400,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             if jev_daily_count is not None and jev_daily_count[0] >= cfg.jev.daily_call_cap:
                 logger.debug("Jev daily cap reached (%d), skipping %s", jev_daily_count[0], symbol)
                 continue
+            tick_jev_calls += 1
             t0 = time.monotonic()
             try:
                 result = retry_with_backoff(lambda: evaluator.evaluate_signal(context), max_retries=1, base_delay_s=0.5)
@@ -599,8 +609,19 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                 symbol=symbol,
             ))
 
+        if approved and qty > 0:
+            tick_entries += 1
         if not approved:
             logger.debug("Skipped %s: %s", symbol, reason)
+
+    n_checked = len(resolved_symbols)
+    if n_checked > 0:
+        skips_summary = ", ".join(f"{v} {k}" for k, v in sorted(tick_skip_reasons.items(), key=lambda x: -x[1]))
+        logger.info(
+            "Tick: %d symbols | %d entries | %d jev calls | skips: %s",
+            n_checked, tick_entries, tick_jev_calls,
+            skips_summary or "none",
+        )
 
 
 if __name__ == "__main__":
