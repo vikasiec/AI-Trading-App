@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from fetch_nse_daily import fetch_yahoo, save_csv
+from fetch_nse_daily import MIN_BARS, fetch_yahoo, main, save_csv
 
 
 YAHOO_RESPONSE = {
@@ -164,3 +164,20 @@ def test_bars_are_sorted_by_timestamp():
             bars = fetch_yahoo("TEST")
 
     assert bars[0]["timestamp"] < bars[1]["timestamp"]
+
+
+def test_main_rejects_short_history_and_writes_nothing(tmp_path, monkeypatch):
+    short = [{
+        "timestamp": "2024-01-02T09:15:00",
+        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1,
+    }]
+    monkeypatch.setattr("fetch_nse_daily.fetch_yahoo", lambda *a, **k: list(short))
+    monkeypatch.setattr("fetch_nse_daily.DATA_DIR", tmp_path / "daily")
+    monkeypatch.setattr("fetch_nse_daily.INDEX_DIR", tmp_path / "index")
+    monkeypatch.setattr("fetch_nse_daily.INDICES", {})
+
+    code = main(["TEST"])
+
+    assert MIN_BARS >= 600
+    assert code == 1
+    assert list(tmp_path.rglob("*.csv")) == []

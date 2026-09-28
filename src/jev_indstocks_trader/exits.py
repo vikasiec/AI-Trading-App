@@ -98,7 +98,9 @@ class ExitManager:
         position.pending_exit_order_id = None
         position.pending_exit_booked_qty = 0
 
-    def _book_pending_fill(self, position: Position, filled_qty: int, fill_price: float) -> None:
+    def _book_pending_fill(
+        self, position: Position, filled_qty: int, fill_price: float, exit_reason: str,
+    ) -> None:
         """Book only the shares of this order not already in cumulative_pnl.
 
         filled_qty is the broker's total on the order. A timeout may already
@@ -137,6 +139,7 @@ class ExitManager:
                 realized_pnl=position.cumulative_pnl,
                 net_pnl=position.cumulative_pnl - position.cumulative_cost,
                 costs=_costs_payload(slice_cost, position.cumulative_cost),
+                exit_reason=exit_reason,
             )
             self.store.remove(position.security_id)
         logger.info(
@@ -173,7 +176,9 @@ class ExitManager:
                     filled = prior.get("filled_qty") or prior.get("tradedqty")
                     avg = prior.get("avg_price") or prior.get("average_price")
                     if filled and int(filled) > 0:
-                        return self._book_pending_fill(position, int(filled), float(avg) if avg else live_ltp)
+                        return self._book_pending_fill(
+                            position, int(filled), float(avg) if avg else live_ltp, reason,
+                        )
                     logger.error(
                         "Pending exit order %s for %s shows %s but no filled qty — "
                         "alerting; will not send a second sell",
@@ -276,6 +281,7 @@ class ExitManager:
                             realized_pnl=position.cumulative_pnl,
                             net_pnl=position.cumulative_pnl - position.cumulative_cost,
                             costs=_costs_payload(slice_cost, position.cumulative_cost),
+                            exit_reason=reason,
                         )
                         self.store.remove(position.security_id)
                     if self.notifier is not None:
@@ -348,6 +354,7 @@ class ExitManager:
         self.audit.update_outcome(
             position.decision_id, fill_price=fill_price, realized_pnl=realized_pnl,
             net_pnl=net, costs=_costs_payload(cost, total_cost),
+            exit_reason=reason,
         )
         self.store.remove(position.security_id)
 

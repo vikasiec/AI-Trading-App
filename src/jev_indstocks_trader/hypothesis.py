@@ -185,3 +185,19 @@ def evaluate_out_of_sample(
         name=name, train=train_result, test=test_result,
         passed=passed, reason=reason,
     )
+
+
+def holdout_net(trades: list[BacktestTrade], cutoff_iso: str) -> float:
+    """Net P&L of trades that entered on or after cutoff. end_of_data rows are excluded."""
+    _, test = _split_trades(trades, cutoff_iso)
+    return sum(t.net_pnl for t in test)
+
+
+def format_baseline_comparison(strategy_test_net: float, baseline_test_net: float) -> str:
+    """Printed comparison only. Does not decide pass or fail."""
+    delta = strategy_test_net - baseline_test_net
+    return (
+        f"  random-entry test net: ₹{baseline_test_net:.2f}\n"
+        f"  strategy minus random-entry: ₹{delta:+.2f}\n"
+        "  comparison only — beating random does not pass a negative average"
+    )

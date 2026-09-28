@@ -19,7 +19,7 @@ from urllib.parse import quote as urlquote
 
 import requests
 
-MIN_BARS = 200
+MIN_BARS = 600
 
 LIQUID_NIFTY_50 = [
     "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK",
@@ -82,8 +82,9 @@ INDEX_DIR = Path(__file__).resolve().parent.parent / "data" / "index"
 INDICES = {"NIFTY50": "^NSEI"}
 
 
-def main() -> int:
-    symbols = sys.argv[1:] if len(sys.argv) > 1 else LIQUID_NIFTY_50
+def main(symbols: list[str] | None = None) -> int:
+    if symbols is None:
+        symbols = sys.argv[1:] if len(sys.argv) > 1 else list(LIQUID_NIFTY_50)
     print(f"Fetching {len(symbols)} symbols, 5 years daily bars each")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ok, fail = 0, 0

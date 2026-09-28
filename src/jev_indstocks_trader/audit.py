@@ -19,6 +19,7 @@ class AuditTrail:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._skip_once: set[tuple[str, str, str]] = set()
 
     def log_decision(
         self,
@@ -30,6 +31,9 @@ class AuditTrail:
         otr_check: str = "PASS",
         order_id: Optional[str] = None,
         had_news: Optional[bool] = None,
+        reason: Optional[str] = None,
+        symbol: Optional[str] = None,
+        detail: Optional[dict] = None,
     ) -> str:
         """Returns a decision_id you can pass to update_outcome() later.
 
@@ -53,22 +57,38 @@ class AuditTrail:
             "had_news": had_news,
             "fill_price": None,
             "realized_pnl": None,
+            "reason": reason,
+            "symbol": symbol,
+            "detail": detail,
         }
         self._append(record)
         return decision_id
 
-    def log_skip(self, security_id: str, reason: str) -> None:
-        """Log a lightweight SKIP row for pre-Jev vetoes and rate-limit skips."""
-        self._append({
+    def log_skip(self, security_id: str, reason: str, symbol: Optional[str] = None) -> None:
+        """Log one SKIP row per security, reason, and UTC day.
+
+        The same veto on every tick is one fact. Repeating it fills the
+        file with copies and hides the decisions that matter.
+        """
+        day = datetime.now(timezone.utc).date().isoformat()
+        key = (day, security_id, reason)
+        record = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "security_id": security_id,
+            "symbol": symbol,
             "action": "SKIP",
             "skip_reason": reason,
-        })
+        }
+        with self._lock:
+            if key in self._skip_once:
+                return
+            self._skip_once.add(key)
+            self._write(record)
 
     def update_outcome(
         self, decision_id: str, fill_price: float, realized_pnl: float,
         net_pnl: Optional[float] = None, costs: Optional[dict] = None,
+        exit_reason: Optional[str] = None,
     ) -> None:
         """Append a correction record rather than mutating history in place --
         JSONL is append-only by design so the audit trail can't be silently edited.
@@ -86,9 +106,13 @@ class AuditTrail:
             "realized_pnl": realized_pnl,
             "net_pnl": net_pnl,
             "costs": costs,
+            "exit_reason": exit_reason,
         })
 
     def _append(self, record: dict) -> None:
         with self._lock:
-            with open(self.path, "a") as f:
-                f.write(json.dumps(record) + "\n")
+            self._write(record)
+
+    def _write(self, record: dict) -> None:
+        with open(self.path, "a") as f:
+            f.write(json.dumps(record) + "\n")

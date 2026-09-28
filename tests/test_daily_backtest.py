@@ -18,6 +18,8 @@ from jev_indstocks_trader.hypothesis import (
     _binomial_ci,
     _split_trades,
     evaluate_out_of_sample,
+    format_baseline_comparison,
+    holdout_net,
 )
 from jev_indstocks_trader.positions import Position
 from jev_indstocks_trader.strategies import daily_breakout_long
@@ -309,3 +311,32 @@ class TestSplitReportNoCostLine:
         text = report.summary_text()
         assert "avg_cost/trade" in text
         assert "baseline_delta" not in text
+
+
+class TestBaselineComparison:
+    def test_period_net_uses_entries_on_or_after_cutoff(self):
+        trades = [
+            BacktestTrade("2024-06-01T09:15:00", "2024-06-02T09:15:00",
+                          100, 110, 1, "target", 10, 10),
+            BacktestTrade("2025-06-01T09:15:00", "2025-06-02T09:15:00",
+                          100, 90, 1, "stop_loss", -20, -20),
+            BacktestTrade("2025-07-01T09:15:00", "2025-09-01T09:15:00",
+                          100, 110, 1, "end_of_data", 50, 50),
+        ]
+        assert holdout_net(trades, "2025-01-01") == -20
+
+    def test_beating_random_does_not_change_the_words_into_a_pass(self):
+        text = format_baseline_comparison(strategy_test_net=-1000.0, baseline_test_net=-5000.0)
+        assert "₹+4000.00" in text or "₹4000.00" in text
+        assert "does not pass" in text
+        trades = [
+            BacktestTrade(f"2025-{(i % 9) + 1:02d}-{(i % 28) + 1:02d}T09:15:00",
+                          f"2025-{(i % 9) + 1:02d}-{(i % 28) + 1:02d}T15:15:00",
+                          100, 90, 10, "stop_loss", -50, -50)
+            for i in range(40)
+        ]
+        report = evaluate_out_of_sample(
+            "losing", trades, total_bars=1000,
+            cutoff_iso="2025-01-01", min_test_trades=30,
+        )
+        assert report.passed is False

@@ -376,18 +376,18 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             if not iv.allow:
                 logger.debug("Pre-Jev skip %s: %s", symbol, iv.reason)
                 tick_skip_reasons[iv.reason] = tick_skip_reasons.get(iv.reason, 0) + 1
-                audit.log_skip(security_id, iv.reason)
+                audit.log_skip(security_id, iv.reason, symbol=symbol)
                 continue
         gv = gap_veto(feat.gap_pct, getattr(cfg.risk, "gap_skip_abs_pct", 0.0))
         if not gv.allow:
             logger.debug("Pre-Jev skip %s: %s", symbol, gv.reason)
             tick_skip_reasons[gv.reason] = tick_skip_reasons.get(gv.reason, 0) + 1
-            audit.log_skip(security_id, gv.reason)
+            audit.log_skip(security_id, gv.reason, symbol=symbol)
             continue
         if mode == "jev_and_rule" and not vote.allow:
             logger.debug("Pre-Jev skip %s: rule_%s", symbol, vote.reason)
             tick_skip_reasons[f"rule_{vote.reason}"] = tick_skip_reasons.get(f"rule_{vote.reason}", 0) + 1
-            audit.log_skip(security_id, f"rule_{vote.reason}")
+            audit.log_skip(security_id, f"rule_{vote.reason}", symbol=symbol)
             continue
 
         result = ConvictionResult(score=0.0, confidence=0.0, raw={})
@@ -402,13 +402,13 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                     logger.debug("Jev rate-limit skip %s (%.0fs remaining)", symbol,
                                  cfg.jev.rescore_interval_s - (now_mono - last))
                     tick_skip_reasons["jev_rate_limit"] = tick_skip_reasons.get("jev_rate_limit", 0) + 1
-                    audit.log_skip(security_id, "jev_rate_limit")
+                    audit.log_skip(security_id, "jev_rate_limit", symbol=symbol)
                     continue
             # Daily cap
             if jev_daily_count is not None and jev_daily_count[0] >= cfg.jev.daily_call_cap:
                 logger.debug("Jev daily cap reached (%d), skipping %s", jev_daily_count[0], symbol)
                 tick_skip_reasons["jev_daily_cap"] = tick_skip_reasons.get("jev_daily_cap", 0) + 1
-                audit.log_skip(security_id, "jev_daily_cap")
+                audit.log_skip(security_id, "jev_daily_cap", symbol=symbol)
                 continue
             tick_jev_calls += 1
             t0 = time.monotonic()
@@ -422,6 +422,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                     jev_ok = False
             except Exception:
                 logger.exception("Jev scoring failed for %s, skipping this tick", symbol)
+                audit.log_skip(security_id, "jev_error", symbol=symbol)
                 continue
             finally:
                 if jev_last_called is not None:
@@ -449,6 +450,9 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                 otr_check=gate_reason,
                 order_id=None,
                 had_news=(len(headlines) > 0) if news_source is not None else None,
+                reason=gate_reason,
+                symbol=symbol,
+                detail={"entry_mode": mode, "scored_at_price": scored_at_price, "paper": cfg.risk.paper_trading},
             )
             continue
 
@@ -570,6 +574,17 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             otr_check="PASS" if approved else "SKIP",
             order_id=order_id,
             had_news=(len(headlines) > 0) if news_source is not None else None,
+            reason=reason,
+            symbol=symbol,
+            detail={
+                "entry_mode": mode,
+                "scored_at_price": scored_at_price,
+                "live_ltp": live_ltp,
+                "qty": qty,
+                "noise_score": result.noise_score,
+                "paper": cfg.risk.paper_trading,
+                "rule": vote.reason,
+            },
         )
 
         if approved and qty > 0:
