@@ -12,3 +12,5 @@ instruments_master.csv
 .mypy_cache/
 .DS_Store
 *.pem
+data/daily/
+data/index/
