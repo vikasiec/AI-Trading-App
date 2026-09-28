@@ -157,11 +157,12 @@ def main() -> None:
     else:
         header = f"⚠️ PRE-MARKET HEALTH: {failed} FAILED"
 
+    separator = "─" * 30
     body = (
         f"{header}\n"
-        f"─" * 30 + "\n"
+        f"{separator}\n"
         + "\n".join(lines)
-        + f"\n─" * 30
+        + f"\n{separator}"
         + f"\nChecked in {elapsed:.1f}s"
     )
 
