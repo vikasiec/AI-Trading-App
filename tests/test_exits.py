@@ -407,8 +407,8 @@ def test_session_close_uses_market_order(tmp_path, mocker):
     gateway.place_limit_order.assert_not_called()
 
 
-def test_stale_pending_exit_cleared_on_status_error(tmp_path, mocker):
-    """Fix: if get_order_status throws for a pending exit, clear the ID and retry."""
+def test_status_check_error_keeps_pending_id_and_skips(tmp_path, mocker):
+    """A status-check blip must NOT clear the ID and place a second sell."""
     store = PositionStore(tmp_path / "positions.json")
     pos = make_position(pending_exit_order_id="STALE_OID")
     store.add(pos)
@@ -416,8 +416,6 @@ def test_stale_pending_exit_cleared_on_status_error(tmp_path, mocker):
     gateway = mocker.Mock()
     gateway.get_ltp.return_value = 2420.0  # hits stop loss
     gateway.get_order_status.side_effect = RuntimeError("broker 503")
-    _mock_successful_order_and_fill(gateway)
-    gateway.get_order_status.side_effect = [RuntimeError("broker 503")] + [None] * 5
     audit = mocker.Mock()
 
     manager = ExitManager(
@@ -425,5 +423,55 @@ def test_stale_pending_exit_cleared_on_status_error(tmp_path, mocker):
     )
     manager.check_and_exit_all()
 
-    gateway.place_market_order.assert_called_once()
+    gateway.place_market_order.assert_not_called()
+    open_pos = store.list_open()
+    assert len(open_pos) == 1
+    assert open_pos[0].pending_exit_order_id == "STALE_OID"
+
+
+def test_pending_exit_complete_with_fill_books_close(tmp_path, mocker):
+    """A pending exit that shows COMPLETE with a fill qty should book the close."""
+    store = PositionStore(tmp_path / "positions.json")
+    pos = make_position(pending_exit_order_id="OID_DONE", qty=10)
+    store.add(pos)
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2420.0
+    gateway.get_order_status.return_value = {
+        "order_id": "OID_DONE", "status": "COMPLETE", "filled_qty": 10, "avg_price": 2418.0,
+    }
+    audit = mocker.Mock()
+
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=False,
+    )
+    manager.check_and_exit_all()
+
+    gateway.place_market_order.assert_not_called()
     assert store.list_open() == []
+    audit.update_outcome.assert_called_once()
+
+
+def test_pending_exit_complete_without_fill_alerts_no_double_sell(tmp_path, mocker):
+    """COMPLETE with no fill qty: alert and do NOT send a second sell."""
+    store = PositionStore(tmp_path / "positions.json")
+    pos = make_position(pending_exit_order_id="OID_WEIRD")
+    store.add(pos)
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2420.0
+    gateway.get_order_status.return_value = {
+        "order_id": "OID_WEIRD", "status": "COMPLETE",
+    }
+    audit = mocker.Mock()
+    notifier = mocker.Mock()
+
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375,
+        notifier=notifier, paper_trading=False,
+    )
+    manager.check_and_exit_all()
+
+    gateway.place_market_order.assert_not_called()
+    assert len(store.list_open()) == 1
+    notifier.send_critical_alert.assert_called_once()

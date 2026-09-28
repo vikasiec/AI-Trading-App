@@ -24,6 +24,9 @@ from .positions import Position, PositionStore
 
 logger = logging.getLogger(__name__)
 
+_COMPLETED_STATUSES = frozenset({"COMPLETE", "FILLED", "EXECUTED", "TRADED", "SUCCESS"})
+_DEAD_STATUSES = frozenset({"REJECTED", "CANCELLED", "CANCELED", "EXPIRED", "FAILED", "ABORTED", "RJ"})
+
 
 def determine_exit_reason(
     position: Position,
@@ -78,6 +81,32 @@ class ExitManager:
                 logger.exception("No LTP for forced exit %s — using entry", position.security_id)
             self._execute_exit(position, live_ltp, reason)
 
+    def _book_pending_fill(self, position: Position, filled_qty: int, fill_price: float) -> None:
+        """Book a fill discovered on a recheck of a pending exit order."""
+        remainder = position.qty - filled_qty
+        slice_pnl = (fill_price - position.entry_price) * filled_qty
+        slice_cost = compute_round_trip_cost(
+            buy_price=position.entry_price, sell_price=fill_price, qty=filled_qty,
+            product=position.product, rates=self.cost_rates,
+        )
+        position.cumulative_pnl += slice_pnl
+        position.cumulative_cost += slice_cost.total
+        if remainder > 0:
+            position.qty = remainder
+            position.pending_exit_order_id = None
+            self.store.add(position)
+        else:
+            self.audit.update_outcome(
+                position.decision_id, fill_price=fill_price,
+                realized_pnl=position.cumulative_pnl,
+                net_pnl=position.cumulative_pnl - position.cumulative_cost,
+            )
+            self.store.remove(position.security_id)
+        logger.info(
+            "Booked pending fill for %s: %d filled @ %.2f, %d remaining",
+            position.security_id, filled_qty, fill_price, remainder,
+        )
+
     def _check_one(self, position: Position) -> None:
         try:
             live_ltp = self.gateway.get_ltp(position.scrip_code)
@@ -97,13 +126,29 @@ class ExitManager:
                 prior = self.gateway.get_order_status(position.pending_exit_order_id)
             except Exception:
                 logger.warning(
-                    "Could not check pending exit order %s for %s — clearing stale ID to allow retry",
+                    "Could not check pending exit order %s for %s — will retry next tick",
                     position.pending_exit_order_id, position.security_id,
                 )
-                prior = None
+                return
             if prior is not None:
                 status = str(prior.get("status", "")).upper()
-                if status not in ("REJECTED", "CANCELLED", "CANCELED", "EXPIRED", "FAILED", "ABORTED", "RJ"):
+                if status in _COMPLETED_STATUSES:
+                    filled = prior.get("filled_qty") or prior.get("tradedqty")
+                    avg = prior.get("avg_price") or prior.get("average_price")
+                    if filled and int(filled) > 0:
+                        return self._book_pending_fill(position, int(filled), float(avg) if avg else live_ltp)
+                    logger.error(
+                        "Pending exit order %s for %s shows %s but no filled qty — "
+                        "alerting; will not send a second sell",
+                        position.pending_exit_order_id, position.security_id, status,
+                    )
+                    if self.notifier is not None:
+                        self.notifier.send_critical_alert(
+                            f"EXIT ORDER {position.pending_exit_order_id} for {position.security_id} "
+                            f"shows {status} with no fill qty — verify manually"
+                        )
+                    return
+                if status not in _DEAD_STATUSES:
                     logger.debug(
                         "Exit order %s for %s still in-flight (status=%s), skipping new exit",
                         position.pending_exit_order_id, position.security_id, status,
@@ -261,7 +306,7 @@ class ExitManager:
             net_pnl=net, costs={
                 "brokerage": cost.brokerage, "stt": cost.stt, "exchange_txn": cost.exchange_txn,
                 "sebi_turnover": cost.sebi_turnover, "stamp_duty": cost.stamp_duty, "gst": cost.gst,
-                "total": cost.total,
+                "total": total_cost,
             },
         )
         self.store.remove(position.security_id)
@@ -270,5 +315,5 @@ class ExitManager:
             self.notifier.send_info(
                 f"Exited {position.security_id} ({reason}): entry {position.entry_price:.2f} -> "
                 f"{fill_price:.2f}, qty {position.qty}, gross \u20b9{realized_pnl:.2f}, "
-                f"costs \u20b9{cost.total:.2f}, net \u20b9{net:.2f}"
+                f"costs \u20b9{total_cost:.2f}, net \u20b9{net:.2f}"
             )
