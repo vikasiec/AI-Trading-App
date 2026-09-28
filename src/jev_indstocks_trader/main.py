@@ -318,6 +318,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
     tick_skip_reasons: dict[str, int] = {}
     tick_jev_calls = 0
     tick_entries = 0
+    kill_switch_fired = False
 
     for symbol, instrument, scrip_code in resolved_symbols:
         security_id = instrument["security_id"]
@@ -466,9 +467,11 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             confidence=result.confidence,
         )
 
-        if reason == "daily_drawdown_limit_hit" and kill_switch_fn is not None:
+        if reason == "daily_drawdown_limit_hit" and kill_switch_fn is not None and not kill_switch_fired:
             logger.warning("Daily drawdown limit hit — triggering kill switch")
             kill_switch_fn()
+            kill_switch_fired = True
+            break
 
         action = "SKIP"
         order_id = None

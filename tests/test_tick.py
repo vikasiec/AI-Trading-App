@@ -207,3 +207,17 @@ def test_tick_drawdown_calls_kill_switch_fn(tmp_path, mocker):
           store, ["RELIANCE"], None, cache, kill_switch_fn=kill_fn)
 
     kill_fn.assert_called_once()
+
+
+def test_tick_drawdown_fires_kill_switch_only_once(tmp_path, mocker):
+    """Kill switch must not re-fire for remaining symbols in the same tick."""
+    cfg, gateway, governor, evaluator, instruments, audit, notifier, store, cache = _setup(
+        tmp_path, mocker, paper=True
+    )
+    governor.validate_trade.return_value = (False, "daily_drawdown_limit_hit")
+    kill_fn = mocker.Mock()
+
+    _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
+          store, ["RELIANCE", "TCS", "INFY"], None, cache, kill_switch_fn=kill_fn)
+
+    kill_fn.assert_called_once()
