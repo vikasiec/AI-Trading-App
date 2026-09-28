@@ -57,6 +57,15 @@ class AuditTrail:
         self._append(record)
         return decision_id
 
+    def log_skip(self, security_id: str, reason: str) -> None:
+        """Log a lightweight SKIP row for pre-Jev vetoes and rate-limit skips."""
+        self._append({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "security_id": security_id,
+            "action": "SKIP",
+            "skip_reason": reason,
+        })
+
     def update_outcome(
         self, decision_id: str, fill_price: float, realized_pnl: float,
         net_pnl: Optional[float] = None, costs: Optional[dict] = None,

@@ -26,7 +26,9 @@ def momentum_long(
         ret = (end - start) / start
         vols = [b.volume for b in window[:-1]]
         avg_vol = sum(vols) / len(vols) if vols else 0
-        vol_ok = avg_vol <= 0 or window[-1].volume >= avg_vol * volume_multiple
+        if avg_vol <= 0:
+            return False
+        vol_ok = window[-1].volume >= avg_vol * volume_multiple
         return ret >= min_return_pct and vol_ok
 
     return _fn

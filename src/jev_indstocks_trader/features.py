@@ -14,7 +14,7 @@ class FeatureSet:
     atr_pct: float
     realized_vol: float | None
     regime: str
-    index_day_change_pct: float
+    index_day_change_pct: float | None
     or_high: float | None = None
     or_low: float | None = None
     gap_pct: float | None = None
@@ -59,7 +59,7 @@ def compute_atr_stops(
 
 def compute_features(
     bars: list[Bar],
-    index_day_change_pct: float = 0.0,
+    index_day_change_pct: float | None = None,
     or_high: float | None = None,
     or_low: float | None = None,
     gap_pct: float | None = None,
@@ -86,13 +86,14 @@ def compute_features(
 
 def features_block(feat: FeatureSet) -> str:
     vol = "n/a" if feat.realized_vol is None else f"{feat.realized_vol:.4f}"
+    idx = f"{feat.index_day_change_pct:.2f}%" if feat.index_day_change_pct is not None else "n/a"
     return (
         f"Ret20: {feat.ret_20 * 100:.2f}%\n"
         f"VWAP distance: {feat.vwap_dist_pct * 100:.2f}%\n"
         f"ATR%: {feat.atr_pct * 100:.2f}%\n"
         f"Realized vol: {vol}\n"
         f"Regime: {feat.regime}\n"
-        f"Index day change: {feat.index_day_change_pct:.2f}%\n"
+        f"Index day change: {idx}\n"
         f"OR high: {feat.or_high if feat.or_high is not None else 'n/a'}\n"
         f"OR low: {feat.or_low if feat.or_low is not None else 'n/a'}\n"
         f"Gap vs prior close: {feat.gap_pct if feat.gap_pct is not None else 'n/a'}%"

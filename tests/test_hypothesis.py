@@ -39,6 +39,13 @@ def test_momentum_rejects_move_without_volume():
     assert fn(_bars(closes, vols)) is False
 
 
+def test_momentum_rejects_zero_volume():
+    """Fix #6: zero volume in bars must reject, not auto-pass."""
+    closes = [100.0] * 8 + [100.4, 100.9, 101.5, 102.2]
+    fn = momentum_long(lookback=3, min_return_pct=0.01, volume_multiple=1.2)
+    assert fn(_bars(closes, volume=0)) is False
+
+
 def test_mean_reversion_detects_dip_below_vwap():
     closes = [100.0] * 15 + [99.5, 98.5, 97.0]
     fn = mean_reversion_long(lookback=10, deviation_pct=0.015)

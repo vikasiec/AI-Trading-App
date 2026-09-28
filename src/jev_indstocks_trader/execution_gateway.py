@@ -195,12 +195,14 @@ class ExecutionGateway:
     @staticmethod
     def _parse_quote_entry(data: dict) -> dict:
         ltp = data.get("live_price", data.get("ltp"))
-        change = data.get("day_change_pct", data.get("change_perc", data.get("pChange", 0.0)))
+        change_raw = data.get("day_change_pct", data.get("change_perc", data.get("pChange")))
         volume = data.get("volume", data.get("vol", 0))
-        try:
-            change_f = float(change or 0.0)
-        except (TypeError, ValueError):
-            change_f = 0.0
+        change_f: float | None = None
+        if change_raw is not None:
+            try:
+                change_f = float(change_raw)
+            except (TypeError, ValueError):
+                change_f = None
         try:
             vol_i = int(volume or 0)
         except (TypeError, ValueError):

@@ -256,7 +256,7 @@ def _get_quote(gateway: ExecutionGateway, tick_cache: LiveTickCache, scrip_code:
     """WebSocket tick if fresh, else a retried REST quote (ltp/change/vol)."""
     live = tick_cache.get_fresh(scrip_code)
     if live is not None:
-        return {"ltp": live, "day_change_pct": 0.0, "volume": 0}
+        return {"ltp": live, "day_change_pct": None, "volume": 0}
     return retry_with_backoff(
         lambda: gateway.get_quote(scrip_code), max_retries=3, base_delay_s=0.5,
     )
@@ -322,7 +322,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
 
         ws_tick = tick_cache.get_fresh(scrip_code) if tick_cache else None
         if ws_tick is not None:
-            quote = {"ltp": ws_tick, "day_change_pct": 0.0, "volume": 0}
+            quote = {"ltp": ws_tick, "day_change_pct": None, "volume": 0}
         elif scrip_code in batch_quotes:
             quote = batch_quotes[scrip_code]
         else:
@@ -346,7 +346,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
         rng = or_book.get(symbol) if or_book is not None else None
         feat = compute_features(
             bars,
-            index_day_change_pct=index_day_change_pct or 0.0,
+            index_day_change_pct=index_day_change_pct,
             or_high=rng.high if rng else None,
             or_low=rng.low if rng else None,
             gap_pct=gap_book.get(symbol) if gap_book is not None else None,
@@ -359,7 +359,7 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
         snapshot = MarketSnapshot(
             symbol=symbol,
             ltp=scored_at_price,
-            day_change_pct=quote.get("day_change_pct") or 0.0,
+            day_change_pct=quote.get("day_change_pct"),
             volume=quote.get("volume") or 0,
             headlines=headlines,
         )
@@ -373,15 +373,18 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             if not iv.allow:
                 logger.debug("Pre-Jev skip %s: %s", symbol, iv.reason)
                 tick_skip_reasons[iv.reason] = tick_skip_reasons.get(iv.reason, 0) + 1
+                audit.log_skip(security_id, iv.reason)
                 continue
         gv = gap_veto(feat.gap_pct, getattr(cfg.risk, "gap_skip_abs_pct", 0.0))
         if not gv.allow:
             logger.debug("Pre-Jev skip %s: %s", symbol, gv.reason)
             tick_skip_reasons[gv.reason] = tick_skip_reasons.get(gv.reason, 0) + 1
+            audit.log_skip(security_id, gv.reason)
             continue
         if mode == "jev_and_rule" and not vote.allow:
             logger.debug("Pre-Jev skip %s: rule_%s", symbol, vote.reason)
             tick_skip_reasons[f"rule_{vote.reason}"] = tick_skip_reasons.get(f"rule_{vote.reason}", 0) + 1
+            audit.log_skip(security_id, f"rule_{vote.reason}")
             continue
 
         result = ConvictionResult(score=0.0, confidence=0.0, raw={})
@@ -395,10 +398,14 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                 if (now_mono - last) < cfg.jev.rescore_interval_s:
                     logger.debug("Jev rate-limit skip %s (%.0fs remaining)", symbol,
                                  cfg.jev.rescore_interval_s - (now_mono - last))
+                    tick_skip_reasons["jev_rate_limit"] = tick_skip_reasons.get("jev_rate_limit", 0) + 1
+                    audit.log_skip(security_id, "jev_rate_limit")
                     continue
             # Daily cap
             if jev_daily_count is not None and jev_daily_count[0] >= cfg.jev.daily_call_cap:
                 logger.debug("Jev daily cap reached (%d), skipping %s", jev_daily_count[0], symbol)
+                tick_skip_reasons["jev_daily_cap"] = tick_skip_reasons.get("jev_daily_cap", 0) + 1
+                audit.log_skip(security_id, "jev_daily_cap")
                 continue
             tick_jev_calls += 1
             t0 = time.monotonic()
@@ -457,11 +464,9 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             confidence=result.confidence,
         )
 
-        if reason == "daily_drawdown_limit_hit" and not cfg.risk.paper_trading:
-            try:
-                governor.flatten_all()
-            except Exception:
-                logger.exception("Drawdown flatten failed")
+        if reason == "daily_drawdown_limit_hit":
+            logger.warning("Daily drawdown limit hit — triggering kill switch")
+            _kill_switch()
 
         action = "SKIP"
         order_id = None

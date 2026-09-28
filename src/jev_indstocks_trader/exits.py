@@ -112,7 +112,7 @@ class ExitManager:
         order_id = None
         try:
             if not self.paper_trading:
-                if reason in ("stop_loss", "time_exit"):
+                if reason in ("stop_loss", "time_exit", "session_close", "kill_switch"):
                     order = self.gateway.place_market_order(
                         security_id=position.security_id,
                         side="SELL",
@@ -169,19 +169,22 @@ class ExitManager:
                     closed_qty = fill.filled_qty
                     fill_price = fill.avg_price or live_ltp
                     remainder = position.qty - closed_qty
-                    realized_pnl = (fill_price - position.entry_price) * closed_qty
-                    cost = compute_round_trip_cost(
+                    slice_pnl = (fill_price - position.entry_price) * closed_qty
+                    slice_cost = compute_round_trip_cost(
                         buy_price=position.entry_price, sell_price=fill_price, qty=closed_qty,
                         product=position.product, rates=self.cost_rates,
                     )
-                    self.audit.update_outcome(
-                        position.decision_id, fill_price=fill_price,
-                        realized_pnl=realized_pnl, net_pnl=realized_pnl - cost.total,
-                    )
+                    position.cumulative_pnl += slice_pnl
+                    position.cumulative_cost += slice_cost.total
                     if remainder > 0:
                         position.qty = remainder
                         self.store.add(position)
                     else:
+                        self.audit.update_outcome(
+                            position.decision_id, fill_price=fill_price,
+                            realized_pnl=position.cumulative_pnl,
+                            net_pnl=position.cumulative_pnl - position.cumulative_cost,
+                        )
                         self.store.remove(position.security_id)
                     if self.notifier is not None:
                         self.notifier.send_critical_alert(
@@ -215,15 +218,13 @@ class ExitManager:
                 except Exception:
                     gateway_cancel_ok = False
                     logger.exception("Could not cancel residual exit order %s", order_id)
-                realized_pnl = (fill_price - position.entry_price) * closed_qty
-                cost = compute_round_trip_cost(
+                slice_pnl = (fill_price - position.entry_price) * closed_qty
+                slice_cost = compute_round_trip_cost(
                     buy_price=position.entry_price, sell_price=fill_price, qty=closed_qty,
                     product=position.product, rates=self.cost_rates,
                 )
-                self.audit.update_outcome(
-                    position.decision_id, fill_price=fill_price,
-                    realized_pnl=realized_pnl, net_pnl=realized_pnl - cost.total,
-                )
+                position.cumulative_pnl += slice_pnl
+                position.cumulative_cost += slice_cost.total
                 position.qty = remainder
                 position.pending_exit_order_id = None if gateway_cancel_ok else order_id
                 self.store.add(position)
@@ -236,12 +237,14 @@ class ExitManager:
             fill_price = fill.avg_price or live_ltp
             position.pending_exit_order_id = None
 
-        realized_pnl = (fill_price - position.entry_price) * position.qty
+        final_slice_pnl = (fill_price - position.entry_price) * position.qty
         cost = compute_round_trip_cost(
             buy_price=position.entry_price, sell_price=fill_price, qty=position.qty,
             product=position.product, rates=self.cost_rates,
         )
-        net = realized_pnl - cost.total
+        realized_pnl = position.cumulative_pnl + final_slice_pnl
+        total_cost = position.cumulative_cost + cost.total
+        net = realized_pnl - total_cost
 
         if position.gtt_id is not None and self.indstocks_cfg is not None and not self.paper_trading:
             gtt_orders.cancel_gtt(self.indstocks_cfg, self.auth_headers_fn, position.gtt_id)

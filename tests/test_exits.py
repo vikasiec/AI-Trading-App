@@ -257,7 +257,9 @@ def test_partial_exit_fill_keeps_remainder(tmp_path, mocker):
     open_pos = store.list_open()
     assert len(open_pos) == 1
     assert open_pos[0].qty == 6
-    audit.update_outcome.assert_called_once()
+    assert open_pos[0].cumulative_pnl != 0.0
+    assert open_pos[0].cumulative_cost != 0.0
+    audit.update_outcome.assert_not_called()
     notifier.send_critical_alert.assert_called_once()
 
 
@@ -343,3 +345,63 @@ def test_position_store_remove(tmp_path):
     store.remove("2885")
     assert store.list_open() == []
     assert not store.has_open("2885")
+
+
+def test_partial_then_full_close_sums_cumulative_pnl(tmp_path, mocker):
+    """Fix #5: outcome written only on full close, with summed P&L from all slices."""
+    store = PositionStore(tmp_path / "positions.json")
+    pos = make_position(qty=10, entry_price=100.0)
+    store.add(pos)
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 90.0
+    gateway.place_market_order.return_value = {"data": {"order_id": "OID1"}}
+    gateway.wait_for_fill.return_value = FillResult(
+        status="PARTIAL", filled_qty=4, avg_price=90.0, raw={}
+    )
+    audit = mocker.Mock()
+    notifier = mocker.Mock()
+
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375,
+        notifier=notifier, paper_trading=False,
+    )
+    manager.check_and_exit_all()
+
+    audit.update_outcome.assert_not_called()
+    remaining = store.list_open()
+    assert len(remaining) == 1
+    assert remaining[0].qty == 6
+    slice1_pnl = remaining[0].cumulative_pnl
+    assert slice1_pnl == (90.0 - 100.0) * 4
+
+    gateway.get_ltp.return_value = 95.0
+    gateway.wait_for_fill.return_value = FillResult(
+        status="FILLED", filled_qty=6, avg_price=95.0, raw={"status": "COMPLETE"}
+    )
+    manager.check_and_exit_all()
+
+    assert store.list_open() == []
+    audit.update_outcome.assert_called_once()
+    kwargs = audit.update_outcome.call_args.kwargs
+    expected_total_pnl = (90.0 - 100.0) * 4 + (95.0 - 100.0) * 6
+    assert kwargs["realized_pnl"] == expected_total_pnl
+
+
+def test_session_close_uses_market_order(tmp_path, mocker):
+    """Fix #8: session_close should use MARKET, not LIMIT."""
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position())
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2460.0
+    _mock_successful_order_and_fill(gateway)
+    audit = mocker.Mock()
+
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=False,
+    )
+    manager.force_exit_all(reason="session_close")
+
+    gateway.place_market_order.assert_called_once()
+    gateway.place_limit_order.assert_not_called()

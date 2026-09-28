@@ -15,7 +15,7 @@ from dataclasses import dataclass
 class MarketSnapshot:
     symbol: str
     ltp: float
-    day_change_pct: float
+    day_change_pct: float | None
     volume: int
     headlines: list[str]  # already deduped/recent, upstream
 
@@ -28,7 +28,7 @@ def build_context(snapshot: MarketSnapshot, extra: str = "") -> str:
     body = (
         f"Symbol: {snapshot.symbol}\n"
         f"LTP: {snapshot.ltp}\n"
-        f"Day change: {snapshot.day_change_pct:.2f}%\n"
+        f"Day change: {f'{snapshot.day_change_pct:.2f}%' if snapshot.day_change_pct is not None else 'n/a'}\n"
         f"Volume: {snapshot.volume}\n"
         f"Recent headlines:\n{headline_block}"
     )
