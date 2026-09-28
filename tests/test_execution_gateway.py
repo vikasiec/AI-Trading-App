@@ -122,6 +122,22 @@ def test_wait_for_fill_missing_order_id(mocker):
     assert gw.wait_for_fill(None).status == "NOT_FOUND"
 
 
+def test_wait_for_fill_survives_transient_http_error(mocker):
+    """Transient RequestException during polling should not abort fill check."""
+    import requests as req
+    gw = make_gateway(mocker)
+    mocker.patch.object(
+        gw, "get_order_status",
+        side_effect=[
+            req.RequestException("connection reset"),
+            {"order_id": "OID1", "status": "COMPLETE", "filled_qty": 10, "avg_price": 100.0},
+        ],
+    )
+    result = gw.wait_for_fill("OID1", timeout_s=5.0, poll_interval_s=0.01)
+    assert result.status == "FILLED"
+    assert result.filled_qty == 10
+
+
 def test_fill_result_is_a_plain_dataclass():
     fr = FillResult(status="FILLED", filled_qty=5, avg_price=99.5, raw={"x": 1})
     assert fr.status == "FILLED"

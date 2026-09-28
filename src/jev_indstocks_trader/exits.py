@@ -93,7 +93,14 @@ class ExitManager:
 
     def _execute_exit(self, position: Position, live_ltp: float, reason: str) -> None:
         if not self.paper_trading and position.pending_exit_order_id:
-            prior = self.gateway.get_order_status(position.pending_exit_order_id)
+            try:
+                prior = self.gateway.get_order_status(position.pending_exit_order_id)
+            except Exception:
+                logger.warning(
+                    "Could not check pending exit order %s for %s — clearing stale ID to allow retry",
+                    position.pending_exit_order_id, position.security_id,
+                )
+                prior = None
             if prior is not None:
                 status = str(prior.get("status", "")).upper()
                 if status not in ("REJECTED", "CANCELLED", "CANCELED", "EXPIRED", "FAILED", "ABORTED", "RJ"):

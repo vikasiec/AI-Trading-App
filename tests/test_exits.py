@@ -405,3 +405,25 @@ def test_session_close_uses_market_order(tmp_path, mocker):
 
     gateway.place_market_order.assert_called_once()
     gateway.place_limit_order.assert_not_called()
+
+
+def test_stale_pending_exit_cleared_on_status_error(tmp_path, mocker):
+    """Fix: if get_order_status throws for a pending exit, clear the ID and retry."""
+    store = PositionStore(tmp_path / "positions.json")
+    pos = make_position(pending_exit_order_id="STALE_OID")
+    store.add(pos)
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2420.0  # hits stop loss
+    gateway.get_order_status.side_effect = RuntimeError("broker 503")
+    _mock_successful_order_and_fill(gateway)
+    gateway.get_order_status.side_effect = [RuntimeError("broker 503")] + [None] * 5
+    audit = mocker.Mock()
+
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=False,
+    )
+    manager.check_and_exit_all()
+
+    gateway.place_market_order.assert_called_once()
+    assert store.list_open() == []

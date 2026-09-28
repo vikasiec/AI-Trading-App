@@ -114,6 +114,21 @@ def test_size_order_respects_both_caps(mocker):
     assert qty_small == 2  # 2% of 10,000 = 200 / 100
 
 
+def test_drawdown_http_failure_returns_funds_unreadable(mocker):
+    """Fix: HTTP failure in get_drawdown_pct should return None, causing funds_unreadable rejection."""
+    import requests as req
+    gov, _ = make_governor(mocker, funds={"data": {}})
+    mocker.patch(
+        "jev_indstocks_trader.risk_governor.requests.get",
+        side_effect=req.ConnectionError("connection refused"),
+    )
+    approved, reason = gov.validate_trade(
+        security_id="2885", live_ltp=2450, scored_at_price=2450, conviction=0.9, confidence=0.9
+    )
+    assert approved is False
+    assert reason == "funds_unreadable"
+
+
 def test_size_order_snaps_to_lot(mocker):
     gov, _ = make_governor(mocker, funds={"data": {}})
     assert gov.size_order(equity=1_000_000, price=100, lot_size=15) % 15 == 0

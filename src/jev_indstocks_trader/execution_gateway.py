@@ -297,7 +297,12 @@ class ExecutionGateway:
         deadline = time.monotonic() + timeout_s
         last_seen: Optional[dict] = None
         while time.monotonic() < deadline:
-            order = self.get_order_status(order_id)
+            try:
+                order = self.get_order_status(order_id)
+            except requests.RequestException:
+                logger.warning("Transient HTTP error polling order %s, will retry", order_id)
+                time.sleep(poll_interval_s)
+                continue
             if order is not None:
                 last_seen = order
                 status = str(order.get("status", "")).upper()

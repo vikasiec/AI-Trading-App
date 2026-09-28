@@ -84,9 +84,13 @@ class RiskGovernor:
 
     # -- drawdown ----------------------------------------------------------
 
-    def get_drawdown_pct(self) -> float:
-        resp = requests.get(f"{self.cfg.base_url}/funds", headers=self.auth_headers_fn(), timeout=10)
-        resp.raise_for_status()
+    def get_drawdown_pct(self) -> float | None:
+        try:
+            resp = requests.get(f"{self.cfg.base_url}/funds", headers=self.auth_headers_fn(), timeout=10)
+            resp.raise_for_status()
+        except requests.RequestException:
+            logger.warning("Could not fetch /funds for drawdown check — treating as unreadable")
+            return None
         d = resp.json()["data"]
         equity = (
             d.get("available_balance")
