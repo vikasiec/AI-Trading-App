@@ -171,6 +171,16 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
         logger.exception("Could not bind healthz on %s:%s", cfg.health_host, cfg.health_port)
 
     logger.info("Trading loop starting. Ctrl+C to stop. ENTRY_MODE=%s", cfg.risk.entry_mode)
+    mode_label = "PAPER" if cfg.risk.paper_trading else "LIVE"
+    try:
+        notifier.send_info(
+            f"🟢 Bot started ({mode_label})\n"
+            f"Watchlist: {', '.join(watchlist)}\n"
+            f"Entry mode: {cfg.risk.entry_mode}\n"
+            f"Open positions: {len(position_store.list_open())}"
+        )
+    except Exception:
+        logger.exception("Could not send startup alert to Telegram")
     flattened_on: str | None = None
     bar_cache = BarCache()
     or_book = OpeningRangeBook()
