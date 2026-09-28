@@ -39,6 +39,8 @@ def main():
     elite = [s for s in crossover_signals if s.symbol in rs_symbols]
     crossover_only = [s for s in crossover_signals if s.symbol not in rs_symbols]
 
+    MIN_WATCHLIST = 10
+
     if elite:
         watchlist = [s.symbol for s in elite]
         logger.info("ELITE watchlist (200MA cross + RS top 50): %s", watchlist)
@@ -46,8 +48,15 @@ def main():
         watchlist = [s.symbol for s in crossover_signals]
         logger.info("No elite overlap — using 200MA crossovers: %s", watchlist)
     else:
-        watchlist = [s.symbol for s in rs_signals[:20]]
-        logger.info("No crossovers — falling back to RS top 20: %s", watchlist)
+        watchlist = []
+        logger.info("No crossovers today")
+
+    if len(watchlist) < MIN_WATCHLIST:
+        existing = set(watchlist)
+        pad = [s.symbol for s in rs_signals if s.symbol not in existing]
+        needed = MIN_WATCHLIST - len(watchlist)
+        watchlist.extend(pad[:needed])
+        logger.info("Padded to %d with RS top stocks: %s", len(watchlist), watchlist)
 
     watchlist_path = home / "watchlist_200ma.json"
     with open(watchlist_path, "w") as f:
@@ -100,12 +109,11 @@ def _send_combined_alert(
             rs_block += f"  {i}. {s.symbol} ({s.stock_return_pct:+.1f}%, RS {s.rs_ratio:.2f})\n"
         sections.append(rs_block)
 
+    total = len(elite) + len(crossover_only)
     if not elite and not crossover_only:
-        sections.append("\nNo crossovers today — bot uses RS top 20 as fallback.")
-    elif elite:
-        sections.append(f"\n━━━━━━━━━━━━━━━━━━━━━\n{len(elite)} elite stocks will be traded today.")
+        sections.append("\nNo crossovers today — watchlist filled from RS ranking.")
     else:
-        sections.append(f"\n━━━━━━━━━━━━━━━━━━━━━\n{len(crossover_only)} crossover stocks will be traded today.")
+        sections.append(f"\n━━━━━━━━━━━━━━━━━━━━━\n{total} signal stocks + RS padding = full watchlist.")
 
     notifier.send_info("\n".join(sections))
 
