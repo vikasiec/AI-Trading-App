@@ -193,3 +193,17 @@ def test_tick_feeds_change_and_volume_to_jev(tmp_path, mocker):
     context = evaluator.evaluate_signal.call_args.args[0]
     assert "Day change: 1.20%" in context
     assert "Volume: 10000" in context
+
+
+def test_tick_drawdown_calls_kill_switch_fn(tmp_path, mocker):
+    """Fix #1: daily drawdown must invoke kill_switch_fn, not a bare _kill_switch name."""
+    cfg, gateway, governor, evaluator, instruments, audit, notifier, store, cache = _setup(
+        tmp_path, mocker, paper=True
+    )
+    governor.validate_trade.return_value = (False, "daily_drawdown_limit_hit")
+    kill_fn = mocker.Mock()
+
+    _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
+          store, ["RELIANCE"], None, cache, kill_switch_fn=kill_fn)
+
+    kill_fn.assert_called_once()

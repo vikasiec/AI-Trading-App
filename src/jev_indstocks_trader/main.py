@@ -241,6 +241,7 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
                     jev_last_called=jev_last_called,
                     jev_daily_count=jev_daily_count,
                     jev_counter=jev_counter,
+                    kill_switch_fn=_kill_switch,
                 )
             except Exception:
                 logger.exception("Tick failed — exits still running, skipping new entries this iteration")
@@ -279,7 +280,8 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
           or_book=None, gap_book=None, form_opening_range: bool = False, allow_entries: bool = True,
           index_day_change_pct: float | None = None,
           jev_last_called: dict | None = None, jev_daily_count: list | None = None,
-          jev_counter: JevDailyCounter | None = None) -> None:
+          jev_counter: JevDailyCounter | None = None,
+          kill_switch_fn=None) -> None:
     """One iteration: fetch a snapshot per watchlist symbol, score it, and
     (maybe) open a new position. Exit checks run separately, before this,
     in run_loop() -- closing existing risk always happens before opening
@@ -464,9 +466,9 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             confidence=result.confidence,
         )
 
-        if reason == "daily_drawdown_limit_hit":
+        if reason == "daily_drawdown_limit_hit" and kill_switch_fn is not None:
             logger.warning("Daily drawdown limit hit — triggering kill switch")
-            _kill_switch()
+            kill_switch_fn()
 
         action = "SKIP"
         order_id = None
