@@ -37,6 +37,7 @@ class Position:
     gtt_id: Optional[str] = None  # set when GTT_ENABLED -- the exchange-side OCO order protecting this position
     symbol: str = ""              # ticker for sector caps; empty on pre-v9 stores
     pending_exit_order_id: Optional[str] = None
+    pending_exit_booked_qty: int = 0  # shares of that order already added to cumulative_pnl
     cumulative_pnl: float = 0.0
     cumulative_cost: float = 0.0
 

@@ -28,6 +28,19 @@ _COMPLETED_STATUSES = frozenset({"COMPLETE", "FILLED", "EXECUTED", "TRADED", "SU
 _DEAD_STATUSES = frozenset({"REJECTED", "CANCELLED", "CANCELED", "EXPIRED", "FAILED", "ABORTED", "RJ"})
 
 
+def _costs_payload(slice_cost, total_cost: float) -> dict:
+    """Last slice's line items, with total equal to every slice booked so far."""
+    return {
+        "brokerage": slice_cost.brokerage,
+        "stt": slice_cost.stt,
+        "exchange_txn": slice_cost.exchange_txn,
+        "sebi_turnover": slice_cost.sebi_turnover,
+        "stamp_duty": slice_cost.stamp_duty,
+        "gst": slice_cost.gst,
+        "total": total_cost,
+    }
+
+
 def determine_exit_reason(
     position: Position,
     live_ltp: float,
@@ -81,30 +94,54 @@ class ExitManager:
                 logger.exception("No LTP for forced exit %s — using entry", position.security_id)
             self._execute_exit(position, live_ltp, reason)
 
+    def _clear_pending_exit(self, position: Position) -> None:
+        position.pending_exit_order_id = None
+        position.pending_exit_booked_qty = 0
+
     def _book_pending_fill(self, position: Position, filled_qty: int, fill_price: float) -> None:
-        """Book a fill discovered on a recheck of a pending exit order."""
-        remainder = position.qty - filled_qty
-        slice_pnl = (fill_price - position.entry_price) * filled_qty
+        """Book only the shares of this order not already in cumulative_pnl.
+
+        filled_qty is the broker's total on the order. A timeout may already
+        have booked the first slice and left the order id set.
+        """
+        delta = filled_qty - position.pending_exit_booked_qty
+        if delta <= 0:
+            logger.info(
+                "Pending exit %s for %s already booked; clearing id, %d shares still open",
+                position.pending_exit_order_id, position.security_id, position.qty,
+            )
+            self._clear_pending_exit(position)
+            self.store.add(position)
+            return
+        book_qty = delta if delta <= position.qty else position.qty
+        if delta > position.qty:
+            logger.error(
+                "Pending exit fill %d for %s exceeds local qty %d; booking %d",
+                filled_qty, position.security_id, position.qty, book_qty,
+            )
+        remainder = position.qty - book_qty
+        slice_pnl = (fill_price - position.entry_price) * book_qty
         slice_cost = compute_round_trip_cost(
-            buy_price=position.entry_price, sell_price=fill_price, qty=filled_qty,
+            buy_price=position.entry_price, sell_price=fill_price, qty=book_qty,
             product=position.product, rates=self.cost_rates,
         )
         position.cumulative_pnl += slice_pnl
         position.cumulative_cost += slice_cost.total
         if remainder > 0:
             position.qty = remainder
-            position.pending_exit_order_id = None
+            self._clear_pending_exit(position)
             self.store.add(position)
         else:
             self.audit.update_outcome(
                 position.decision_id, fill_price=fill_price,
                 realized_pnl=position.cumulative_pnl,
                 net_pnl=position.cumulative_pnl - position.cumulative_cost,
+                costs=_costs_payload(slice_cost, position.cumulative_cost),
             )
             self.store.remove(position.security_id)
         logger.info(
-            "Booked pending fill for %s: %d filled @ %.2f, %d remaining",
-            position.security_id, filled_qty, fill_price, remainder,
+            "Booked pending fill for %s: %d new shares @ %.2f, %d remaining",
+            position.security_id, book_qty, fill_price, remainder,
         )
 
     def _check_one(self, position: Position) -> None:
@@ -154,7 +191,7 @@ class ExitManager:
                         position.pending_exit_order_id, position.security_id, status,
                     )
                     return
-            position.pending_exit_order_id = None
+            self._clear_pending_exit(position)
             self.store.add(position)
 
         logger.info(
@@ -187,6 +224,7 @@ class ExitManager:
                 if not order_id:
                     raise RuntimeError(f"exit place-order returned no id: {order}")
                 position.pending_exit_order_id = order_id
+                position.pending_exit_booked_qty = 0
                 self.store.add(position)
         except Exception:
             logger.exception(
@@ -208,7 +246,7 @@ class ExitManager:
                     "Exit order %s for %s was REJECTED -- position remains open, will retry next tick",
                     order_id, position.security_id,
                 )
-                position.pending_exit_order_id = None
+                self._clear_pending_exit(position)
                 self.store.add(position)
                 if self.notifier is not None:
                     self.notifier.send_critical_alert(
@@ -230,12 +268,14 @@ class ExitManager:
                     position.cumulative_cost += slice_cost.total
                     if remainder > 0:
                         position.qty = remainder
+                        position.pending_exit_booked_qty = closed_qty
                         self.store.add(position)
                     else:
                         self.audit.update_outcome(
                             position.decision_id, fill_price=fill_price,
                             realized_pnl=position.cumulative_pnl,
                             net_pnl=position.cumulative_pnl - position.cumulative_cost,
+                            costs=_costs_payload(slice_cost, position.cumulative_cost),
                         )
                         self.store.remove(position.security_id)
                     if self.notifier is not None:
@@ -278,7 +318,11 @@ class ExitManager:
                 position.cumulative_pnl += slice_pnl
                 position.cumulative_cost += slice_cost.total
                 position.qty = remainder
-                position.pending_exit_order_id = None if gateway_cancel_ok else order_id
+                if gateway_cancel_ok:
+                    self._clear_pending_exit(position)
+                else:
+                    position.pending_exit_order_id = order_id
+                    position.pending_exit_booked_qty = closed_qty
                 self.store.add(position)
                 if self.notifier is not None:
                     self.notifier.send_critical_alert(
@@ -287,7 +331,7 @@ class ExitManager:
                     )
                 return
             fill_price = fill.avg_price or live_ltp
-            position.pending_exit_order_id = None
+            self._clear_pending_exit(position)
 
         final_slice_pnl = (fill_price - position.entry_price) * position.qty
         cost = compute_round_trip_cost(
@@ -303,11 +347,7 @@ class ExitManager:
 
         self.audit.update_outcome(
             position.decision_id, fill_price=fill_price, realized_pnl=realized_pnl,
-            net_pnl=net, costs={
-                "brokerage": cost.brokerage, "stt": cost.stt, "exchange_txn": cost.exchange_txn,
-                "sebi_turnover": cost.sebi_turnover, "stamp_duty": cost.stamp_duty, "gst": cost.gst,
-                "total": total_cost,
-            },
+            net_pnl=net, costs=_costs_payload(cost, total_cost),
         )
         self.store.remove(position.security_id)
 

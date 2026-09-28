@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 from jev_indstocks_trader.execution_gateway import FillResult
 from jev_indstocks_trader.exits import ExitManager, determine_exit_reason
 from jev_indstocks_trader.positions import Position, PositionStore
@@ -450,6 +452,77 @@ def test_pending_exit_complete_with_fill_books_close(tmp_path, mocker):
     gateway.place_market_order.assert_not_called()
     assert store.list_open() == []
     audit.update_outcome.assert_called_once()
+
+
+def test_timeout_partial_then_complete_books_only_the_new_shares(tmp_path, mocker):
+    """A timeout that already booked 6 shares must not book those 6 again when the order later shows COMPLETE for 10."""
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position(qty=10, entry_price=2450.0))
+
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2420.0
+    gateway.place_market_order.return_value = {"data": {"order_id": "OID1"}}
+    gateway.wait_for_fill.return_value = FillResult(
+        status="TIMEOUT", filled_qty=6, avg_price=2410.0, raw={"status": "PENDING"}
+    )
+    audit = mocker.Mock()
+    notifier = mocker.Mock()
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375,
+        notifier=notifier, paper_trading=False,
+    )
+    manager.check_and_exit_all()
+
+    open_pos = store.list_open()
+    assert len(open_pos) == 1
+    assert open_pos[0].qty == 4
+    assert open_pos[0].pending_exit_order_id == "OID1"
+    assert open_pos[0].pending_exit_booked_qty == 6
+    first_pnl = (2410.0 - 2450.0) * 6
+    assert open_pos[0].cumulative_pnl == first_pnl
+    audit.update_outcome.assert_not_called()
+
+    gateway.get_order_status.return_value = {
+        "order_id": "OID1", "status": "COMPLETE", "filled_qty": 10, "avg_price": 2400.0,
+    }
+    manager.check_and_exit_all()
+
+    gateway.place_market_order.assert_called_once()
+    assert store.list_open() == []
+    audit.update_outcome.assert_called_once()
+    kwargs = audit.update_outcome.call_args.kwargs
+    assert kwargs["realized_pnl"] == first_pnl + (2400.0 - 2450.0) * 4
+    assert kwargs["net_pnl"] == pytest.approx(kwargs["realized_pnl"] - kwargs["costs"]["total"])
+    assert kwargs["costs"]["total"] > 0
+
+
+def test_complete_with_no_new_shares_clears_pending_without_rebooking(tmp_path, mocker):
+    """COMPLETE whose filled qty was already booked must not add P&L again."""
+    store = PositionStore(tmp_path / "positions.json")
+    booked = (2410.0 - 2450.0) * 6
+    store.add(make_position(
+        qty=4, entry_price=2450.0, pending_exit_order_id="OID1",
+        pending_exit_booked_qty=6, cumulative_pnl=booked, cumulative_cost=12.0,
+    ))
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = 2420.0
+    gateway.get_order_status.return_value = {
+        "order_id": "OID1", "status": "COMPLETE", "filled_qty": 6, "avg_price": 2410.0,
+    }
+    audit = mocker.Mock()
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=False,
+    )
+    manager.check_and_exit_all()
+
+    gateway.place_market_order.assert_not_called()
+    audit.update_outcome.assert_not_called()
+    open_pos = store.list_open()
+    assert len(open_pos) == 1
+    assert open_pos[0].qty == 4
+    assert open_pos[0].cumulative_pnl == booked
+    assert open_pos[0].pending_exit_order_id is None
+    assert open_pos[0].pending_exit_booked_qty == 0
 
 
 def test_pending_exit_complete_without_fill_alerts_no_double_sell(tmp_path, mocker):
