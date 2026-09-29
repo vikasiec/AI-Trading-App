@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -50,7 +51,7 @@ from .reconciliation import ReconciliationService
 from .retry import retry_with_backoff
 from .risk_governor import RiskGovernor
 from .telegram_alerts import TelegramAlertNotifier
-from .watchlist import load_watchlist
+from .watchlist import get_watchlist_file_mtime, load_watchlist, try_reload_watchlist_file
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,8 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     )
 
     watchlist = load_watchlist(cfg)
+    watchlist_mtime = get_watchlist_file_mtime(cfg)
+    watchlist_file_path = Path(cfg.watchlist_file).expanduser() if cfg.watchlist_file.strip() else None
     logger.info("Watchlist: %s", watchlist)
 
     news_urls = [u.strip() for u in cfg.news_rss_feeds.split(",") if u.strip()]
@@ -193,6 +196,27 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     sweep_last_refilled: float = 0.0
     try:
         while True:
+            if watchlist_file_path is not None and not cfg.watchlist_symbols.strip():
+                new_list, new_mtime, changed = try_reload_watchlist_file(
+                    watchlist_file_path, watchlist, watchlist_mtime,
+                )
+                if changed:
+                    added = set(new_list) - set(watchlist)
+                    removed = set(watchlist) - set(new_list)
+                    watchlist = new_list
+                    watchlist_mtime = new_mtime
+                    logger.info("Watchlist reloaded: %d symbols %s", len(watchlist), watchlist)
+                    try:
+                        parts = [f"🔄 Watchlist reloaded: {len(watchlist)} symbols"]
+                        if added:
+                            parts.append(f"Added: {', '.join(sorted(added))}")
+                        if removed:
+                            parts.append(f"Removed: {', '.join(sorted(removed))}")
+                        notifier.send_info("\n".join(parts))
+                    except Exception:
+                        logger.exception("Could not send watchlist reload alert")
+                elif new_mtime != watchlist_mtime:
+                    watchlist_mtime = new_mtime
             if heartbeat.due():
                 heartbeat.ping()
             phase = session_phase() if cfg.respect_session else "open"

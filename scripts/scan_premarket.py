@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -59,8 +61,17 @@ def main():
         logger.info("Padded to %d with RS top stocks: %s", len(watchlist), watchlist)
 
     watchlist_path = home / "watchlist_200ma.json"
-    with open(watchlist_path, "w") as f:
-        json.dump(watchlist, f, indent=2)
+    fd, tmp = tempfile.mkstemp(dir=str(home), suffix=".json.tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(watchlist, f, indent=2)
+        os.replace(tmp, str(watchlist_path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     logger.info("Watchlist written to %s — %d stocks", watchlist_path, len(watchlist))
 
     rs_path = home / "watchlist_rs.json"
