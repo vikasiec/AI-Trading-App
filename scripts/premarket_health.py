@@ -7,7 +7,7 @@ availability, Jev API, and cron/service readiness.
 Exits 0 if all checks pass, 1 if any fail. Always sends a Telegram
 summary so the user knows the system was checked.
 
-Usage (cron, 08:50 IST = 03:20 UTC):
+Usage (cron, 08:50 IST weekdays — runs AFTER token refresh at 08:30):
     cd /home/opc/AI-Trading-App && PYTHONPATH=src python3 scripts/premarket_health.py
 """
 from __future__ import annotations

@@ -78,10 +78,11 @@ python -m jev_indstocks_trader.main
 ```
 
 Schedule the token refresh (single owner process only -- see the big
-warning in `scripts/refresh_token.py` and `docs/ARCHITECTURE.md` §5):
+warning in `scripts/refresh_token.py` and `docs/ARCHITECTURE.md` §5).
+Run **daily** (not just weekdays) so the token survives weekends:
 
 ```
-0 9 * * 1-5 /usr/bin/python3 /path/to/scripts/refresh_token.py
+30 8 * * * /usr/bin/python3 /path/to/scripts/refresh_token.py
 ```
 
 ## What's still a placeholder

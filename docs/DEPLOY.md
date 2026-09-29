@@ -30,7 +30,8 @@ your laptop.
 
 Docker alternative: `docker compose up -d`. Compose runs token **once** at
 start, then the trader. Add a host cron `docker compose run --rm token` at
-09:00 IST weekdays — compose does not schedule the timer by itself.
+08:30 IST **daily** (not just weekdays — the token expires in <24h, so a
+Friday-only refresh dies by Saturday morning). Must run before health check.
 
 ## Hard rules
 

@@ -3,8 +3,8 @@
 Meant to run via cron every 30 min during market hours. Only alerts
 when the service SHOULD be running but isn't.
 
-Usage (cron, every 30 min 09:15-15:30 IST = 03:45-10:00 UTC):
-    */30 3-9 * * 1-5 cd /home/opc/AI-Trading-App && PYTHONPATH=src python3 scripts/watchdog.py
+Usage (cron, every 30 min 09:30-15:30 IST weekdays):
+    0,30 9-15 * * 1-5 cd /home/opc/AI-Trading-App && PYTHONPATH=src python3 scripts/watchdog.py
 """
 from __future__ import annotations
 

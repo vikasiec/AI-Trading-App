@@ -135,10 +135,12 @@ def auth_headers() -> dict:
     return {"Authorization": get_cached_token(), "Content-Type": "application/json"}
 ```
 
-Cron for the **single** refresh process only (09:00 IST, before market open):
+Cron for the **single** refresh process only (08:30 IST daily — first in
+the pre-market chain, before scanner and health check. Runs daily including
+weekends so the token never expires over a Saturday/Sunday/holiday gap):
 
 ```
-0 9 * * 1-5 /usr/bin/python3 /path/to/refresh_token.py
+30 8 * * * /usr/bin/python3 /path/to/refresh_token.py
 ```
 
 ---

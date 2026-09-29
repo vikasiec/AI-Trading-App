@@ -1,8 +1,8 @@
 [Unit]
-Description=Weekday 09:00 IST INDstocks token refresh
+Description=Daily 08:30 IST INDstocks token refresh
 
 [Timer]
-OnCalendar=Mon..Fri 09:00 Asia/Kolkata
+OnCalendar=*-*-* 08:30 Asia/Kolkata
 Persistent=true
 Unit=jev-token.service
 

@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Single-owner INDstocks token refresh.
 
-Schedule this via cron on ONE machine/process only, before market open:
+Schedule this via cron on ONE machine/process only. Run DAILY (not just
+weekdays) so the token survives weekends — a Friday-only refresh expires
+by Saturday ~09:00, causing heartbeat failures all weekend and Monday morning.
 
-    # IST servers
-    0 9 * * 1-5 /usr/bin/python3 /path/to/scripts/refresh_token.py
+    # IST servers (daily 08:30, first in the pre-market chain)
+    30 8 * * * /usr/bin/python3 /path/to/scripts/refresh_token.py
 
-    # UTC servers
-    30 3 * * 1-5 /usr/bin/python3 /path/to/scripts/refresh_token.py
+    # UTC servers (daily 03:00)
+    0 3 * * * /usr/bin/python3 /path/to/scripts/refresh_token.py
 
 Do NOT also call this from the main trading loop or the Telegram bot --
 they should only read the cached token via jev_indstocks_trader.auth.get_cached_token().
