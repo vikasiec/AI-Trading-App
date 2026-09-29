@@ -26,7 +26,7 @@ from .audit import AuditTrail
 from .config import load_config, validate_config
 from .health import build_payload, start_health_server
 from .heartbeat import BrokerHeartbeat
-from .session import minutes_since_open, now_ist, session_phase
+from .session import minutes_since_open, minutes_until_flatten, now_ist, session_phase
 from .bar_cache import BarCache
 from .entry import combine_votes, gap_veto, index_veto, rule_vote
 from .gaps import GapBook
@@ -189,6 +189,8 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     jev_counter = JevDailyCounter()
     jev_daily_count = [jev_counter.get(now_ist().date().isoformat())]
     jev_daily_date = now_ist().date().isoformat()
+    sweep_pending: set[str] = set()
+    sweep_last_refilled: float = 0.0
     try:
         while True:
             if heartbeat.due():
@@ -228,6 +230,25 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
                 jev_last_called.clear()
             mins_open = minutes_since_open() if cfg.respect_session else None
             forming = mins_open is not None and mins_open < cfg.risk.open_skip_minutes
+            mins_to_flatten = minutes_until_flatten() if cfg.respect_session else None
+            closing_soon = (
+                mins_to_flatten is not None
+                and mins_to_flatten <= cfg.risk.last_entry_minutes_before_close
+            )
+            # Sweep refill: every sweep_interval_min, reload the full watchlist
+            # for log-only Jev scoring of rule-gated symbols.
+            now_mono = time.monotonic()
+            if (
+                cfg.risk.sweep_enabled
+                and not forming
+                and not closing_soon
+                and cfg.risk.entry_mode == "jev_and_rule"
+                and (now_mono - sweep_last_refilled) >= cfg.risk.sweep_interval_min * 60
+            ):
+                sweep_pending = set(watchlist)
+                sweep_last_refilled = now_mono
+                logger.info("Sweep refilled: %d symbols queued", len(sweep_pending))
+
             index_chg = _read_index_change(gateway, tick_cache, cfg.risk.index_scrip)
             try:
                 _tick(
@@ -236,12 +257,14 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
                     or_book=or_book,
                     gap_book=gap_book,
                     form_opening_range=forming,
-                    allow_entries=not forming,
+                    allow_entries=not forming and not closing_soon,
+                    entry_block_reason="forming_or" if forming else "closing_soon" if closing_soon else None,
                     index_day_change_pct=index_chg,
                     jev_last_called=jev_last_called,
                     jev_daily_count=jev_daily_count,
                     jev_counter=jev_counter,
                     kill_switch_fn=_kill_switch,
+                    sweep_pending=sweep_pending if cfg.risk.sweep_enabled else None,
                 )
             except Exception:
                 logger.exception("Tick failed — exits still running, skipping new entries this iteration")
@@ -278,10 +301,12 @@ def _read_index_change(gateway, tick_cache, scrip: str) -> float | None:
 def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
           position_store, watchlist, news_source, tick_cache, bar_cache=None,
           or_book=None, gap_book=None, form_opening_range: bool = False, allow_entries: bool = True,
+          entry_block_reason: str | None = None,
           index_day_change_pct: float | None = None,
           jev_last_called: dict | None = None, jev_daily_count: list | None = None,
           jev_counter: JevDailyCounter | None = None,
-          kill_switch_fn=None) -> None:
+          kill_switch_fn=None,
+          sweep_pending: set | None = None) -> None:
     """One iteration: fetch a snapshot per watchlist symbol, score it, and
     (maybe) open a new position. Exit checks run separately, before this,
     in run_loop() -- closing existing risk always happens before opening
@@ -318,7 +343,9 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
     tick_skip_reasons: dict[str, int] = {}
     tick_jev_calls = 0
     tick_entries = 0
+    tick_sweep_calls = 0
     kill_switch_fired = False
+    sweep_cap = int(cfg.jev.daily_call_cap * cfg.risk.sweep_cap_pct) if sweep_pending is not None else 0
 
     for symbol, instrument, scrip_code in resolved_symbols:
         security_id = instrument["security_id"]
@@ -356,7 +383,8 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
         )
         vote = rule_vote(bars, feat)
         if not allow_entries:
-            tick_skip_reasons["forming_or"] = tick_skip_reasons.get("forming_or", 0) + 1
+            reason = entry_block_reason or "forming_or"
+            tick_skip_reasons[reason] = tick_skip_reasons.get(reason, 0) + 1
             continue
         headlines = news_source.headlines_for(symbol, instrument.get("name")) if news_source else []
         snapshot = MarketSnapshot(
@@ -388,6 +416,72 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
             logger.debug("Pre-Jev skip %s: rule_%s", symbol, vote.reason)
             tick_skip_reasons[f"rule_{vote.reason}"] = tick_skip_reasons.get(f"rule_{vote.reason}", 0) + 1
             audit.log_skip(security_id, f"rule_{vote.reason}", symbol=symbol)
+            # --- Sweep: log-only Jev call on rule-gated symbols ---
+            sweep_rate_ok = True
+            if jev_last_called is not None and symbol in jev_last_called:
+                elapsed = time.monotonic() - jev_last_called[symbol]
+                if elapsed < cfg.jev.rescore_interval_s:
+                    sweep_rate_ok = False
+            if (
+                sweep_rate_ok
+                and sweep_pending is not None
+                and symbol in sweep_pending
+                and tick_sweep_calls < cfg.risk.sweep_per_tick_cap
+                and jev_daily_count is not None
+                and jev_daily_count[0] < sweep_cap
+            ):
+                sweep_pending.discard(symbol)
+                tick_sweep_calls += 1
+                headlines = news_source.headlines_for(symbol, instrument.get("name")) if news_source else []
+                snapshot = MarketSnapshot(
+                    symbol=symbol, ltp=scored_at_price,
+                    day_change_pct=quote.get("day_change_pct"),
+                    volume=quote.get("volume") or 0, headlines=headlines,
+                )
+                ctx = build_context(snapshot, extra=features_block(feat))
+                try:
+                    sweep_result = retry_with_backoff(
+                        lambda: evaluator.evaluate_signal(ctx), max_retries=1, base_delay_s=0.5,
+                    )
+                except Exception:
+                    logger.exception("Sweep Jev call failed for %s", symbol)
+                else:
+                    would_pass = (
+                        sweep_result.score >= cfg.risk.min_conviction
+                        and sweep_result.confidence >= cfg.risk.min_confidence
+                        and not (
+                            getattr(cfg.jev, "noise_veto", False)
+                            and sweep_result.noise_score >= cfg.jev.noise_threshold
+                        )
+                    )
+                    audit.log_decision(
+                        security_id=security_id,
+                        jev_conviction=sweep_result.score,
+                        jev_confidence=sweep_result.confidence,
+                        action="SWEEP",
+                        latency_ms=0.0,
+                        otr_check="SWEEP",
+                        had_news=(len(headlines) > 0) if news_source is not None else None,
+                        reason=f"rule_{vote.reason}",
+                        symbol=symbol,
+                        detail={
+                            "rule_reason": vote.reason,
+                            "regime": feat.regime,
+                            "scored_at_price": scored_at_price,
+                            "noise_score": sweep_result.noise_score,
+                            "would_pass": would_pass,
+                            "paper": cfg.risk.paper_trading,
+                        },
+                    )
+                    logger.info(
+                        "SWEEP %s: conviction=%.2f confidence=%.2f would_pass=%s rule=%s",
+                        symbol, sweep_result.score, sweep_result.confidence, would_pass, vote.reason,
+                    )
+                finally:
+                    if jev_daily_count is not None:
+                        jev_daily_count[0] += 1
+                    if jev_counter is not None:
+                        jev_counter.increment(now_ist().date().isoformat())
             continue
 
         result = ConvictionResult(score=0.0, confidence=0.0, raw={})
@@ -643,8 +737,8 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
     if n_checked > 0:
         skips_summary = ", ".join(f"{v} {k}" for k, v in sorted(tick_skip_reasons.items(), key=lambda x: -x[1]))
         logger.info(
-            "Tick: %d symbols | %d entries | %d jev calls | skips: %s",
-            n_checked, tick_entries, tick_jev_calls,
+            "Tick: %d symbols | %d entries | %d jev calls | %d sweeps | skips: %s",
+            n_checked, tick_entries, tick_jev_calls, tick_sweep_calls,
             skips_summary or "none",
         )
 

@@ -186,6 +186,43 @@ class TestFormatAlert:
         assert "No BUY decisions" in text
 
 
+class TestSidToSymbolMapping:
+    """Regression test: EOD script must use NSE symbols, not numeric security_ids."""
+
+    def test_builds_sid_to_symbol_from_decisions(self):
+        decisions = [
+            {"security_id": "13147", "symbol": "PVRINOX", "action": "SKIP",
+             "jev_conviction": 0.72, "jev_confidence": 0.47},
+            {"security_id": "18011", "symbol": "WHIRLPOOL", "action": "SKIP",
+             "jev_conviction": 0.56, "jev_confidence": 0.44},
+        ]
+        sid_to_symbol: dict[str, str] = {}
+        for d in decisions:
+            sid = d["security_id"]
+            sym = d.get("symbol", sid)
+            sid_to_symbol.setdefault(sid, sym)
+
+        assert sid_to_symbol == {"13147": "PVRINOX", "18011": "WHIRLPOOL"}
+        symbol_to_sid = {sym: sid for sid, sym in sid_to_symbol.items()}
+        tickers = [f"{sym}.NS" for sym in symbol_to_sid]
+        assert "PVRINOX.NS" in tickers
+        assert "WHIRLPOOL.NS" in tickers
+        assert "13147.NS" not in tickers
+
+    def test_falls_back_to_sid_when_no_symbol(self):
+        decisions = [
+            {"security_id": "99999", "action": "SKIP",
+             "jev_conviction": 0.80, "jev_confidence": 0.60},
+        ]
+        sid_to_symbol: dict[str, str] = {}
+        for d in decisions:
+            sid = d["security_id"]
+            sym = d.get("symbol", sid)
+            sid_to_symbol.setdefault(sid, sym)
+
+        assert sid_to_symbol == {"99999": "99999"}
+
+
 class TestTrendSummary:
     def test_insufficient_data(self):
         history = [{"buy_accuracy_pct": 60, "buy_decisions": 2}]

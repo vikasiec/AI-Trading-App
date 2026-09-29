@@ -47,3 +47,13 @@ def minutes_since_open(now=None, open_hhmm: tuple[int, int] = (9, 15)) -> float 
         return None
     opened = t.replace(hour=open_hhmm[0], minute=open_hhmm[1], second=0, microsecond=0)
     return (t - opened).total_seconds() / 60.0
+
+
+def minutes_until_flatten(
+    now=None, flatten_hhmm: tuple[int, int] = (15, 15),
+) -> float | None:
+    t = now_ist(now)
+    if t.weekday() >= 5:
+        return None
+    flatten_t = t.replace(hour=flatten_hhmm[0], minute=flatten_hhmm[1], second=0, microsecond=0)
+    return (flatten_t - t).total_seconds() / 60.0

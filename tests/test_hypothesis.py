@@ -140,3 +140,12 @@ def test_validate_config_catches_bad_pct(monkeypatch):
     cfg = load_config()  # non-strict: does not raise
     problems = validate_config(cfg)
     assert any("DAILY_LOSS_LIMIT_PCT" in p for p in problems)
+
+
+def test_validate_config_catches_bad_sweep_settings(monkeypatch):
+    monkeypatch.setenv("SWEEP_INTERVAL_MIN", "0")
+    monkeypatch.setenv("SWEEP_CAP_PCT", "1.5")
+    cfg = load_config()
+    problems = validate_config(cfg)
+    assert any("SWEEP_INTERVAL_MIN" in p for p in problems)
+    assert any("SWEEP_CAP_PCT" in p for p in problems)

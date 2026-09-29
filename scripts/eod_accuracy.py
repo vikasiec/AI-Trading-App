@@ -23,11 +23,14 @@ IST = timezone(timedelta(hours=5, minutes=30))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 
-def _fetch_closing_prices(security_ids: list[str], target_date: str) -> dict[str, float]:
-    """Fetch closing prices for the given securities on the target date.
+def _fetch_closing_prices(
+    sid_to_symbol: dict[str, str], target_date: str,
+) -> dict[str, float]:
+    """Fetch closing prices and return them keyed by security_id.
 
-    security_ids are INDstocks-format IDs. We map them back to NSE
-    tickers for yfinance.
+    sid_to_symbol maps INDstocks security_id → NSE symbol (e.g.
+    "13147" → "PVRINOX"). yfinance needs the NSE symbol, not the
+    numeric id.
     """
     try:
         import yfinance as yf
@@ -35,11 +38,12 @@ def _fetch_closing_prices(security_ids: list[str], target_date: str) -> dict[str
         logger.error("yfinance not installed. Run: pip install yfinance")
         return {}
 
-    tickers = [f"{sid}.NS" for sid in security_ids]
+    symbol_to_sid = {sym: sid for sid, sym in sid_to_symbol.items()}
+    tickers = [f"{sym}.NS" for sym in symbol_to_sid]
     if not tickers:
         return {}
 
-    logger.info("Fetching closing prices for %d symbols...", len(tickers))
+    logger.info("Fetching closing prices for %d symbols: %s", len(tickers), ", ".join(symbol_to_sid.keys()))
     try:
         data = yf.download(
             tickers, start=target_date,
@@ -59,8 +63,8 @@ def _fetch_closing_prices(security_ids: list[str], target_date: str) -> dict[str
         return {}
 
     prices: dict[str, float] = {}
-    for sid in security_ids:
-        ticker = f"{sid}.NS"
+    for sym, sid in symbol_to_sid.items():
+        ticker = f"{sym}.NS"
         if len(tickers) == 1:
             series = close
         elif ticker in close.columns:
@@ -118,9 +122,13 @@ def main():
         logger.info("No decisions found for %s — nothing to report", args.date)
         return
 
-    all_sids = list({d["security_id"] for d in buys + skips})
-    closing_prices = _fetch_closing_prices(all_sids, args.date)
-    logger.info("Fetched closing prices for %d/%d symbols", len(closing_prices), len(all_sids))
+    sid_to_symbol: dict[str, str] = {}
+    for d in buys + skips:
+        sid = d["security_id"]
+        sym = d.get("symbol", sid)
+        sid_to_symbol.setdefault(sid, sym)
+    closing_prices = _fetch_closing_prices(sid_to_symbol, args.date)
+    logger.info("Fetched closing prices for %d/%d symbols", len(closing_prices), len(sid_to_symbol))
 
     report = compute_accuracy(buys, skips, closing_prices, args.date)
 

@@ -103,12 +103,17 @@ class RiskConfig:
     # jev | rule | jev_and_rule — default jev keeps current behaviour.
     entry_mode: str = field(default_factory=lambda: _optional("ENTRY_MODE", "jev").lower())
     open_skip_minutes: float = field(default_factory=lambda: float(_optional("OPEN_SKIP_MINUTES", "15")))
+    last_entry_minutes_before_close: float = field(default_factory=lambda: float(_optional("LAST_ENTRY_MINUTES_BEFORE_CLOSE", "30")))
     index_scrip: str = field(default_factory=lambda: _optional("INDEX_SCRIP", "NSE_26000"))
     index_veto_pct: float = field(default_factory=lambda: float(_optional("INDEX_VETO_PCT", "-0.8")))
     index_veto_enabled: bool = field(
         default_factory=lambda: _optional("INDEX_VETO_ENABLED", "true").lower() == "true"
     )
     gap_skip_abs_pct: float = field(default_factory=lambda: float(_optional("GAP_SKIP_ABS_PCT", "3.0")))
+    sweep_enabled: bool = field(default_factory=lambda: _optional("SWEEP_ENABLED", "true").lower() == "true")
+    sweep_interval_min: float = field(default_factory=lambda: float(_optional("SWEEP_INTERVAL_MIN", "30")))
+    sweep_per_tick_cap: int = field(default_factory=lambda: int(_optional("SWEEP_PER_TICK_CAP", "2")))
+    sweep_cap_pct: float = field(default_factory=lambda: float(_optional("SWEEP_CAP_PCT", "0.80")))
 
 
 @dataclass(frozen=True)
@@ -163,6 +168,14 @@ def validate_config(cfg: AppConfig) -> list[str]:
         problems.append(f"JEV_CONFIDENCE_THRESHOLD={r.min_confidence} must be in [0, 1]")
     if r.stop_loss_pct <= 0 or r.target_pct <= 0:
         problems.append("STOP_LOSS_PCT and TARGET_PCT must be > 0")
+    if r.last_entry_minutes_before_close < 0:
+        problems.append(f"LAST_ENTRY_MINUTES_BEFORE_CLOSE={r.last_entry_minutes_before_close} must be >= 0")
+    if r.sweep_interval_min <= 0:
+        problems.append(f"SWEEP_INTERVAL_MIN={r.sweep_interval_min} must be > 0")
+    if r.sweep_per_tick_cap < 0:
+        problems.append(f"SWEEP_PER_TICK_CAP={r.sweep_per_tick_cap} must be >= 0")
+    if not (0 < r.sweep_cap_pct <= 1):
+        problems.append(f"SWEEP_CAP_PCT={r.sweep_cap_pct} must be in (0, 1]")
     if r.max_concurrent_positions < 1:
         problems.append("MAX_CONCURRENT_POSITIONS must be >= 1")
     if r.max_position_capital_inr <= 0:
