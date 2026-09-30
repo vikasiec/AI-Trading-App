@@ -3,17 +3,21 @@
 Owner must send `/halt CONFIRM` (or `/flatten CONFIRM`) from their user id
 in the owner chat. Forwards and other users are ignored.
 
-Monitoring commands (read-only, owner-only):
-  /status   — running state, positions, P&L, Jev calls
+Monitoring commands (owner-only):
+  /status    — running state, positions, P&L, Jev calls
   /watchlist — current watchlist symbols
-  /audit    — today's signal decisions
-  /logs     — last N audit trail entries
-  /health   — heartbeat, connectivity, uptime
+  /add SYM   — add a stock to the watchlist
+  /remove SYM — remove a stock from the watchlist
+  /audit     — today's signal decisions
+  /logs      — last N audit trail entries
+  /health    — heartbeat, connectivity, uptime
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -121,6 +125,22 @@ def _read_last_n_audit(audit_path: str, n: int = 10) -> list[dict]:
     return entries[-n:]
 
 
+def _atomic_write_watchlist(path: Path, symbols: list[str]) -> None:
+    """Write watchlist JSON atomically (tmp + replace)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".json.tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(symbols, f, indent=2)
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 class TelegramAlertNotifier:
     def __init__(self, cfg: TelegramConfig, kill_switch_callback: Callable[[], None]):
         self.cfg = cfg
@@ -178,6 +198,24 @@ class TelegramAlertNotifier:
             except Exception:
                 logger.exception("Could not reply to /watchlist")
 
+        @self.bot.message_handler(commands=["add"])
+        def handle_add(message):
+            if not _authorized_read(message, self.cfg.owner_chat_id):
+                return
+            try:
+                self.bot.reply_to(message, self._handle_add_symbol(message))
+            except Exception:
+                logger.exception("Could not reply to /add")
+
+        @self.bot.message_handler(commands=["remove"])
+        def handle_remove(message):
+            if not _authorized_read(message, self.cfg.owner_chat_id):
+                return
+            try:
+                self.bot.reply_to(message, self._handle_remove_symbol(message))
+            except Exception:
+                logger.exception("Could not reply to /remove")
+
         @self.bot.message_handler(commands=["audit"])
         def handle_audit(message):
             if not _authorized_read(message, self.cfg.owner_chat_id):
@@ -213,6 +251,8 @@ class TelegramAlertNotifier:
                 "Commands:\n"
                 "/status — positions, P&L, Jev calls\n"
                 "/watchlist — current symbols\n"
+                "/add SYMBOL — add stock to watchlist\n"
+                "/remove SYMBOL — remove from watchlist\n"
                 "/audit — today's signals\n"
                 "/logs — last 10 audit entries\n"
                 "/health — heartbeat & uptime\n"
@@ -384,6 +424,58 @@ class TelegramAlertNotifier:
         ]
 
         return "\n".join(lines)
+
+    def _handle_add_symbol(self, message) -> str:
+        text = (getattr(message, "text", None) or "").strip()
+        parts = text.split()
+        if len(parts) < 2:
+            return "Usage: /add SYMBOL\nExample: /add RELIANCE"
+        symbol = parts[1].strip().upper()
+        if not symbol.isalpha() and "-" not in symbol:
+            return f"Invalid symbol: {symbol}"
+
+        state = self._get_state()
+        wl_path = state.get("watchlist_file_path")
+        if not wl_path:
+            return "No watchlist file configured (WATCHLIST_FILE not set)."
+
+        current = list(state.get("watchlist", []))
+        if symbol in current:
+            return f"{symbol} is already in the watchlist."
+
+        current.append(symbol)
+        try:
+            _atomic_write_watchlist(Path(wl_path), current)
+        except Exception:
+            logger.exception("Failed to write watchlist file for /add")
+            return f"Failed to write watchlist file."
+
+        return f"Added {symbol}. Watchlist ({len(current)}): {', '.join(current)}"
+
+    def _handle_remove_symbol(self, message) -> str:
+        text = (getattr(message, "text", None) or "").strip()
+        parts = text.split()
+        if len(parts) < 2:
+            return "Usage: /remove SYMBOL\nExample: /remove RELIANCE"
+        symbol = parts[1].strip().upper()
+
+        state = self._get_state()
+        wl_path = state.get("watchlist_file_path")
+        if not wl_path:
+            return "No watchlist file configured (WATCHLIST_FILE not set)."
+
+        current = list(state.get("watchlist", []))
+        if symbol not in current:
+            return f"{symbol} is not in the watchlist."
+
+        current.remove(symbol)
+        try:
+            _atomic_write_watchlist(Path(wl_path), current)
+        except Exception:
+            logger.exception("Failed to write watchlist file for /remove")
+            return f"Failed to write watchlist file."
+
+        return f"Removed {symbol}. Watchlist ({len(current)}): {', '.join(current)}"
 
     def send_critical_alert(self, text: str) -> None:
         try:

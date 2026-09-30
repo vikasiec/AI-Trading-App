@@ -1,4 +1,4 @@
-"""Tests for Telegram monitoring commands (/status, /watchlist, /audit, /logs, /health)."""
+"""Tests for Telegram monitoring commands (/status, /watchlist, /add, /remove, /audit, /logs, /health)."""
 from __future__ import annotations
 
 import json
@@ -10,6 +10,7 @@ import pytest
 
 from jev_indstocks_trader.telegram_alerts import (
     TelegramAlertNotifier,
+    _atomic_write_watchlist,
     _authorized_read,
     _read_last_n_audit,
     _read_today_audit,
@@ -215,3 +216,101 @@ class TestFormatLogs:
         assert "EXIT" in result
         assert "target" in result
         assert "+120.50" in result
+
+
+class TestAtomicWriteWatchlist:
+    def test_writes_json(self, tmp_path):
+        path = tmp_path / "wl.json"
+        _atomic_write_watchlist(path, ["RELIANCE", "TCS"])
+        data = json.loads(path.read_text())
+        assert data == ["RELIANCE", "TCS"]
+
+    def test_overwrites_existing(self, tmp_path):
+        path = tmp_path / "wl.json"
+        path.write_text('["OLD"]')
+        _atomic_write_watchlist(path, ["NEW"])
+        assert json.loads(path.read_text()) == ["NEW"]
+
+
+class TestAddSymbol:
+    def _msg(self, text):
+        msg = MagicMock()
+        msg.text = text
+        msg.chat.id = 123
+        msg.forward_from = None
+        msg.forward_from_chat = None
+        msg.forward_origin = None
+        msg.forward_date = None
+        return msg
+
+    def test_add_new_symbol(self, notifier, state_provider, tmp_path):
+        wl_file = tmp_path / "wl.json"
+        wl_file.write_text('["RELIANCE", "TCS", "INFY"]')
+        state_provider["watchlist_file_path"] = str(wl_file)
+        notifier.set_state_provider(lambda: dict(state_provider))
+        result = notifier._handle_add_symbol(self._msg("/add HDFCBANK"))
+        assert "Added HDFCBANK" in result
+        assert "4" in result
+        saved = json.loads(wl_file.read_text())
+        assert "HDFCBANK" in saved
+
+    def test_add_duplicate(self, notifier, state_provider, tmp_path):
+        wl_file = tmp_path / "wl.json"
+        wl_file.write_text('["RELIANCE", "TCS", "INFY"]')
+        state_provider["watchlist_file_path"] = str(wl_file)
+        notifier.set_state_provider(lambda: dict(state_provider))
+        result = notifier._handle_add_symbol(self._msg("/add RELIANCE"))
+        assert "already in" in result
+
+    def test_add_no_symbol(self, notifier, state_provider):
+        result = notifier._handle_add_symbol(self._msg("/add"))
+        assert "Usage" in result
+
+    def test_add_no_watchlist_file(self, notifier, state_provider):
+        state_provider["watchlist_file_path"] = None
+        notifier.set_state_provider(lambda: dict(state_provider))
+        result = notifier._handle_add_symbol(self._msg("/add SBIN"))
+        assert "WATCHLIST_FILE" in result
+
+    def test_add_lowercased_uppercased(self, notifier, state_provider, tmp_path):
+        wl_file = tmp_path / "wl.json"
+        wl_file.write_text('["RELIANCE"]')
+        state_provider["watchlist_file_path"] = str(wl_file)
+        notifier.set_state_provider(lambda: dict(state_provider))
+        result = notifier._handle_add_symbol(self._msg("/add sbin"))
+        assert "Added SBIN" in result
+
+
+class TestRemoveSymbol:
+    def _msg(self, text):
+        msg = MagicMock()
+        msg.text = text
+        msg.chat.id = 123
+        msg.forward_from = None
+        msg.forward_from_chat = None
+        msg.forward_origin = None
+        msg.forward_date = None
+        return msg
+
+    def test_remove_existing(self, notifier, state_provider, tmp_path):
+        wl_file = tmp_path / "wl.json"
+        wl_file.write_text('["RELIANCE", "TCS", "INFY"]')
+        state_provider["watchlist_file_path"] = str(wl_file)
+        notifier.set_state_provider(lambda: dict(state_provider))
+        result = notifier._handle_remove_symbol(self._msg("/remove TCS"))
+        assert "Removed TCS" in result
+        assert "2" in result
+        saved = json.loads(wl_file.read_text())
+        assert "TCS" not in saved
+
+    def test_remove_not_present(self, notifier, state_provider, tmp_path):
+        wl_file = tmp_path / "wl.json"
+        wl_file.write_text('["RELIANCE"]')
+        state_provider["watchlist_file_path"] = str(wl_file)
+        notifier.set_state_provider(lambda: dict(state_provider))
+        result = notifier._handle_remove_symbol(self._msg("/remove SBIN"))
+        assert "not in" in result
+
+    def test_remove_no_symbol(self, notifier, state_provider):
+        result = notifier._handle_remove_symbol(self._msg("/remove"))
+        assert "Usage" in result

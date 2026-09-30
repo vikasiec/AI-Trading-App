@@ -225,6 +225,7 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
             "halted": halt_state.is_halted(),
             "positions": position_store.list_open(),
             "watchlist": list(watchlist),
+            "watchlist_file_path": str(watchlist_file_path) if watchlist_file_path else None,
             "jev_calls_today": jev_daily_count[0],
             "jev_cap": cfg.jev.daily_call_cap,
             "started_at": started_at,
