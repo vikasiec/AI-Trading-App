@@ -13,10 +13,12 @@ nothing here is INDstocks- or NSE-specific.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 
 import feedparser
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,11 @@ class NewsSource:
             return cached.entries
 
         try:
-            parsed = feedparser.parse(url)
+            resp = requests.get(url, timeout=8)
+            resp.raise_for_status()
+            parsed = feedparser.parse(resp.content)
+            if getattr(parsed, "bozo", False) and not parsed.entries:
+                raise RuntimeError("feed parse failed")
             entries = [
                 {"title": e.get("title", ""), "summary": e.get("summary", "")}
                 for e in parsed.entries
@@ -62,8 +68,8 @@ class NewsSource:
         matches: list[str] = []
         for url in self.feed_urls:
             for entry in self._fetch_feed(url):
-                haystack = f"{entry['title']} {entry['summary']}".lower()
-                if any(needle in haystack for needle in needles):
+                haystack = f"{entry['title']} {entry['summary']}".upper()
+                if any(re.search(rf"(?<![A-Z0-9]){re.escape(needle.upper())}(?![A-Z0-9])", haystack) for needle in needles):
                     matches.append(entry["title"])
                 if len(matches) >= limit:
                     return matches

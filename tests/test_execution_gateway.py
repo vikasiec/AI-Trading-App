@@ -110,6 +110,17 @@ def test_wait_for_fill_partial_when_filled_lt_requested(mocker):
     assert result.filled_qty == 3
 
 
+def test_wait_for_fill_expired_with_shares_is_partial(mocker):
+    gw = make_gateway(mocker)
+    mocker.patch.object(
+        gw, "get_order_status",
+        return_value={"order_id": "OID1", "status": "EXPIRED", "filled_qty": 4, "avg_price": 100.5},
+    )
+    result = gw.wait_for_fill("OID1", timeout_s=1.0, poll_interval_s=0.01, requested_qty=10)
+    assert result.status == "PARTIAL"
+    assert result.filled_qty == 4
+
+
 def test_wait_for_fill_cancelled_without_fill(mocker):
     gw = make_gateway(mocker)
     mocker.patch.object(gw, "get_order_status", return_value={"order_id": "OID1", "status": "CANCELLED"})

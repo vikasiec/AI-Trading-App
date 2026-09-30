@@ -133,3 +133,72 @@ def test_size_order_snaps_to_lot(mocker):
     gov, _ = make_governor(mocker, funds={"data": {}})
     assert gov.size_order(equity=1_000_000, price=100, lot_size=15) % 15 == 0
     assert gov.size_order(equity=1_000, price=100, lot_size=15) == 0
+
+
+def test_drawdown_uses_sod_not_shrunk_available(mocker):
+    funds = {
+        "data": {
+            "sod_balance": 100000,
+            "available_balance": 10000,
+            "realized_pnl": -500,
+            "unrealized_pnl": 0,
+        }
+    }
+    gov, _ = make_governor(mocker, funds=funds)
+    assert gov.get_drawdown_pct() == pytest.approx(0.005)
+
+
+def test_order_without_timestamp_is_not_this_minute(mocker):
+    order_book = {"data": [{"security_id": "2885"}]}
+    gov, _ = make_governor(mocker, order_book=order_book)
+    assert gov.executed_keys == set()
+    assert gov._order_book_loaded is True
+
+
+def test_flatten_positions_read_failure_is_not_success(mocker):
+    import requests as req
+    gov, _ = make_governor(mocker, funds={"data": {}})
+
+    def _get(url, **kwargs):
+        if url.endswith("/positions"):
+            raise req.ConnectionError("down")
+        return _fake_response({"data": []})
+
+    mocker.patch("jev_indstocks_trader.risk_governor.requests.get", side_effect=_get)
+    mocker.patch("jev_indstocks_trader.risk_governor.requests.post", return_value=_fake_response({}))
+    result = gov.flatten_all(only_security_ids={"2885"})
+    assert result.ok is False
+    assert "2885" in result.still_open
+
+
+def test_flatten_leaves_delivery_and_untracked_names(mocker):
+    gov, cfg = make_governor(mocker, funds={"data": {}})
+    posts = []
+    position_reads = {"n": 0}
+
+    def _get(url, **kwargs):
+        if url.endswith("/order-book"):
+            return _fake_response({"data": []})
+        position_reads["n"] += 1
+        bot_qty = 10 if position_reads["n"] == 1 else 0
+        return _fake_response({"data": [
+            {"security_id": "111", "net_qty": 5, "product": "CNC", "exchange": "NSE", "segment": "EQUITY"},
+            {"security_id": "222", "net_qty": 3, "product": "INTRADAY", "exchange": "NSE", "segment": "EQUITY"},
+            {"security_id": "2885", "net_qty": bot_qty, "product": "INTRADAY", "exchange": "NSE", "segment": "EQUITY"},
+        ]})
+
+    class _post_resp:
+        status_code = 200
+        text = ""
+
+    def _post(url, **kwargs):
+        posts.append(kwargs.get("json"))
+        return _post_resp()
+
+    mocker.patch("jev_indstocks_trader.risk_governor.requests.get", side_effect=_get)
+    mocker.patch("jev_indstocks_trader.risk_governor.requests.post", side_effect=_post)
+    result = gov.flatten_all(only_security_ids={"2885"})
+    assert result.ok is True
+    assert result.still_open == ()
+    assert [body["security_id"] for body in posts] == ["2885"]
+    _ = cfg

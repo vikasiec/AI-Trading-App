@@ -15,6 +15,15 @@ class BarCache:
         self.max_bars = max_bars
         self._bars: dict[str, list[Bar]] = {}
         self._last_cum_vol: dict[str, int] = {}
+        self._day: str | None = None
+
+    def roll_day(self, day: str) -> None:
+        """Drop yesterday's minute bars so the open is not scored on them."""
+        if self._day == day:
+            return
+        self._day = day
+        self._bars.clear()
+        self._last_cum_vol.clear()
 
     def update(self, symbol: str, ltp: float, volume: int = 0, ts: datetime | None = None) -> None:
         if ltp <= 0:

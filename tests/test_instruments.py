@@ -22,6 +22,29 @@ def test_normalize_official_csv_columns():
     assert n["segment"] == "EQUITY"
 
 
+def test_hyphenated_symbol_is_not_truncated():
+    n = normalize_instrument_row({
+        "SECURITY_ID": "16669",
+        "SYMBOL_NAME": "BAJAJ-AUTO",
+        "TRADING_SYMBOL": "BAJAJ-AUTO",
+        "EXCH": "NSE",
+        "SERIES": "EQ",
+        "TICK_SIZE": "0.05",
+    })
+    assert n["symbol"] == "BAJAJ-AUTO"
+
+
+def test_series_suffix_still_strips():
+    n = normalize_instrument_row({
+        "SECURITY_ID": "2885",
+        "TRADING_SYMBOL": "RELIANCE-EQ",
+        "EXCH": "NSE",
+        "SERIES": "EQ",
+        "TICK_SIZE": "0.05",
+    })
+    assert n["symbol"] == "RELIANCE"
+
+
 def test_normalize_tick_in_paise():
     n = normalize_instrument_row({
         "SECURITY_ID": "1", "SYMBOL_NAME": "FOO", "TICK_SIZE": "5", "EXCH": "NSE",

@@ -24,6 +24,15 @@ from .config import INDstocksConfig
 logger = logging.getLogger(__name__)
 
 
+def _equity_symbol(raw: str) -> str:
+    """Drop a series suffix only. BAJAJ-AUTO must stay BAJAJ-AUTO."""
+    upper = raw.upper()
+    for suffix in ("-EQ", "-BE", "-BZ", "-SM", "-BL"):
+        if upper.endswith(suffix):
+            return upper[: -len(suffix)]
+    return upper
+
+
 def _ci(row: dict, *keys: str) -> str | None:
     lower = {str(k).lower(): v for k, v in row.items()}
     for key in keys:
@@ -58,7 +67,7 @@ def normalize_instrument_row(row: dict) -> dict | None:
     return {
         "security_id": sid,
         "scrip_code": f"{exch}_{sid}",
-        "symbol": symbol.upper().split("-")[0],
+        "symbol": _equity_symbol(symbol),
         "trading_symbol": (_ci(row, "TRADING_SYMBOL") or symbol).upper(),
         "name": name,
         "exchange": exch,
@@ -108,14 +117,14 @@ class InstrumentsMaster:
             norm = normalize_instrument_row(row)
             if norm is None:
                 continue
-            if norm["series"] not in ("EQ", "BE", "BZ", ""):
+            if norm["series"] not in ("EQ", ""):
                 continue
             key = norm["symbol"]
             existing = self._by_symbol.get(key)
             if existing and existing.get("series") == "EQ" and norm["series"] != "EQ":
                 continue
             self._by_symbol[key] = norm
-            ts = norm["trading_symbol"].split("-")[0]
+            ts = _equity_symbol(norm["trading_symbol"])
             self._by_symbol.setdefault(ts, norm)
         logger.info("Instruments master loaded: %d symbols", len(self._by_symbol))
 

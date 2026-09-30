@@ -74,20 +74,29 @@ class BrokerHeartbeat:
                 try:
                     self.flatten_fn()
                     self._flattened_this_outage = True
+                    self._flatten_confirmed_clean = False
                 except Exception:
                     logger.exception("Heartbeat flatten failed — will retry next ping")
             return False
 
         if self.consecutive_failures:
             logger.info("Heartbeat recovered after %d failures", self.consecutive_failures)
-            if self.flatten_on_outage and self.flatten_fn is not None and not self._flatten_confirmed_clean:
-                logger.warning("Recovery after outage — re-checking flatten state")
+            # A blip that recovered before the grace flatten must not kill the book.
+            # Re-check only after this outage already flattened.
+            if (
+                self.flatten_on_outage
+                and self.flatten_fn is not None
+                and self._flattened_this_outage
+                and not self._flatten_confirmed_clean
+            ):
+                logger.warning("Recovery after flatten — re-checking flatten state")
                 try:
                     self.flatten_fn()
+                    self._flatten_confirmed_clean = True
                 except Exception:
-                    logger.exception("Post-recovery flatten check failed")
+                    logger.exception("Post-recovery flatten check failed — will retry next ping")
+                    return True
         self.consecutive_failures = 0
         self.last_ok = True
         self._flattened_this_outage = False
-        self._flatten_confirmed_clean = False
         return True

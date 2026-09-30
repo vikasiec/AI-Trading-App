@@ -143,6 +143,7 @@ class ExecutionGateway:
         segment: str = "EQUITY",
         product: str = "INTRADAY",
         validity: str = "DAY",
+        tick_size: float | None = None,
     ) -> dict:
         order_data = {
             "txn_type": side,
@@ -151,7 +152,7 @@ class ExecutionGateway:
             "security_id": security_id,
             "qty": qty,
             "order_type": "LIMIT",
-            "limit_price": round_to_tick(price, self.tick_size),
+            "limit_price": round_to_tick(price, tick_size if tick_size is not None else self.tick_size),
             "validity": validity,
             "product": product,
             "is_amo": False,
@@ -174,6 +175,43 @@ class ExecutionGateway:
         resp = requests.get(f"{self.cfg.base_url}/positions", headers=self.auth_headers_fn(), timeout=10)
         resp.raise_for_status()
         return resp.json().get("data", [])
+
+    def net_qty(self, security_id: str) -> int | None:
+        """Broker net quantity for one id. None when the book cannot be read."""
+        try:
+            positions = self.get_positions()
+        except requests.RequestException:
+            logger.exception("Could not read broker positions for %s", security_id)
+            return None
+        total = 0
+        seen = False
+        for pos in positions:
+            if str(pos.get("security_id")) != str(security_id):
+                continue
+            seen = True
+            try:
+                total += int(pos.get("net_qty") or 0)
+            except (TypeError, ValueError):
+                return None
+        return total if seen else 0
+
+    def find_recent_order_id(self, security_id: str, side: str) -> str | None:
+        """Newest working or filled order id for this symbol and side.
+
+        Used when a place-order POST fails after the broker may have accepted it.
+        """
+        book = self.get_order_book()
+        side_u = side.upper()
+        for order in reversed(book):
+            if str(order.get("security_id")) != str(security_id):
+                continue
+            txn = str(order.get("txn_type") or order.get("side") or "").upper()
+            if txn and txn != side_u:
+                continue
+            oid = extract_order_id(order)
+            if oid:
+                return oid
+        return None
 
     def get_funds(self) -> dict:
         resp = requests.get(f"{self.cfg.base_url}/funds", headers=self.auth_headers_fn(), timeout=10)
@@ -319,6 +357,10 @@ class ExecutionGateway:
                         return FillResult(status="PARTIAL", filled_qty=filled, avg_price=avg, raw=order)
                     return FillResult(status="FILLED", filled_qty=filled, avg_price=avg, raw=order)
                 if status in REJECTED_STATUSES:
+                    # An expired limit can still have traded shares. Those
+                    # shares are a fill, not a clean reject.
+                    if filled and filled > 0:
+                        return FillResult(status="PARTIAL", filled_qty=filled, avg_price=avg, raw=order)
                     return FillResult(status="REJECTED", filled_qty=0, avg_price=None, raw=order)
                 if status in CANCELLED_STATUSES:
                     if filled and filled > 0:

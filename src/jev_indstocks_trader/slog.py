@@ -3,8 +3,28 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timezone
+
+_SECRET = re.compile(r"bot\d+:[A-Za-z0-9_-]+")
+
+
+class RedactSecretsFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = _SECRET.sub("bot<redacted>", record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                _SECRET.sub("bot<redacted>", a) if isinstance(a, str) else a
+                for a in record.args
+            )
+        elif isinstance(record.args, dict):
+            record.args = {
+                k: _SECRET.sub("bot<redacted>", v) if isinstance(v, str) else v
+                for k, v in record.args.items()
+            }
+        return True
 
 
 class JsonFormatter(logging.Formatter):
@@ -22,6 +42,7 @@ class JsonFormatter(logging.Formatter):
 
 def configure_logging(json_mode: bool = False, level: int = logging.INFO) -> None:
     handler = logging.StreamHandler(sys.stdout)
+    handler.addFilter(RedactSecretsFilter())
     handler.setFormatter(
         JsonFormatter() if json_mode else logging.Formatter(
             "%(asctime)s %(levelname)s %(name)s: %(message)s"

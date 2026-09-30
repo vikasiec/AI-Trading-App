@@ -13,12 +13,15 @@ open indefinitely.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -54,7 +57,15 @@ class PositionStore:
             return {}
         with open(self.path) as f:
             raw = json.load(f)
-        return {k: Position(**v) for k, v in raw.items()}
+        known = set(Position.__dataclass_fields__)
+        loaded = {}
+        for k, v in raw.items():
+            if not isinstance(v, dict):
+                logger.error("Skipping position %s: stored value is %s", k, type(v).__name__)
+                continue
+            clean = {field: value for field, value in v.items() if field in known}
+            loaded[k] = Position(**clean)
+        return loaded
 
     def _save(self) -> None:
         tmp_path = self.path.with_suffix(".tmp")
@@ -75,7 +86,12 @@ class PositionStore:
 
     def list_open(self) -> list[Position]:
         with self._lock:
-            return list(self._positions.values())
+            return [Position(**asdict(p)) for p in self._positions.values()]
+
+    def get(self, security_id: str) -> Optional[Position]:
+        with self._lock:
+            pos = self._positions.get(security_id)
+            return None if pos is None else Position(**asdict(pos))
 
     def has_open(self, security_id: str) -> bool:
         with self._lock:

@@ -45,7 +45,7 @@ class JevConfig:
     confidence_threshold: float = field(default_factory=lambda: float(_optional("JEV_CONFIDENCE_THRESHOLD", "0.60")))
     request_timeout_s: float = field(default_factory=lambda: float(_optional("JEV_TIMEOUT_S", "2.0")))
     noise_threshold: float = field(default_factory=lambda: float(_optional("JEV_NOISE_THRESHOLD", "0.70")))
-    noise_veto: bool = field(default_factory=lambda: _optional("JEV_NOISE_VETO", "true").lower() == "true")
+    noise_veto: bool = field(default_factory=lambda: _optional("JEV_NOISE_VETO", "true").strip().lower() in {"1", "true", "yes", "on"})
     rescore_interval_s: float = field(default_factory=lambda: float(_optional("JEV_RESCORE_S", "60")))
     daily_call_cap: int = field(default_factory=lambda: int(_optional("JEV_DAILY_CALL_CAP", "500")))
 
@@ -85,7 +85,7 @@ class RiskConfig:
     # never held indefinitely.
     stop_loss_pct: float = field(default_factory=lambda: float(_optional("STOP_LOSS_PCT", "0.01")))
     target_pct: float = field(default_factory=lambda: float(_optional("TARGET_PCT", "0.02")))
-    atr_stops_enabled: bool = field(default_factory=lambda: _optional("ATR_STOPS_ENABLED", "false").lower() == "true")
+    atr_stops_enabled: bool = field(default_factory=lambda: _optional("ATR_STOPS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"})
     atr_stop_multiplier: float = field(default_factory=lambda: float(_optional("ATR_STOP_MULTIPLIER", "2.0")))
     atr_target_multiplier: float = field(default_factory=lambda: float(_optional("ATR_TARGET_MULTIPLIER", "3.0")))
     atr_stop_floor_pct: float = field(default_factory=lambda: float(_optional("ATR_STOP_FLOOR_PCT", "0.005")))
@@ -99,18 +99,18 @@ class RiskConfig:
     # GTT -- exchange-side backup stop-loss/target, on top of the client-side
     # exits.py logic. Off by default: see gtt_orders.py's "confirm before
     # enabling" note.
-    gtt_enabled: bool = field(default_factory=lambda: _optional("GTT_ENABLED", "false").lower() == "true")
+    gtt_enabled: bool = field(default_factory=lambda: _optional("GTT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"})
     # jev | rule | jev_and_rule — default jev keeps current behaviour.
-    entry_mode: str = field(default_factory=lambda: _optional("ENTRY_MODE", "jev").lower())
+    entry_mode: str = field(default_factory=lambda: _optional("ENTRY_MODE", "jev").strip().lower())
     open_skip_minutes: float = field(default_factory=lambda: float(_optional("OPEN_SKIP_MINUTES", "15")))
     last_entry_minutes_before_close: float = field(default_factory=lambda: float(_optional("LAST_ENTRY_MINUTES_BEFORE_CLOSE", "30")))
     index_scrip: str = field(default_factory=lambda: _optional("INDEX_SCRIP", "NSE_26000"))
     index_veto_pct: float = field(default_factory=lambda: float(_optional("INDEX_VETO_PCT", "-0.8")))
     index_veto_enabled: bool = field(
-        default_factory=lambda: _optional("INDEX_VETO_ENABLED", "true").lower() == "true"
+        default_factory=lambda: _optional("INDEX_VETO_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     )
     gap_skip_abs_pct: float = field(default_factory=lambda: float(_optional("GAP_SKIP_ABS_PCT", "3.0")))
-    sweep_enabled: bool = field(default_factory=lambda: _optional("SWEEP_ENABLED", "true").lower() == "true")
+    sweep_enabled: bool = field(default_factory=lambda: _optional("SWEEP_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"})
     sweep_interval_min: float = field(default_factory=lambda: float(_optional("SWEEP_INTERVAL_MIN", "30")))
     sweep_per_tick_cap: int = field(default_factory=lambda: int(_optional("SWEEP_PER_TICK_CAP", "2")))
     sweep_cap_pct: float = field(default_factory=lambda: float(_optional("SWEEP_CAP_PCT", "0.80")))
@@ -130,12 +130,12 @@ class AppConfig:
     watchlist_file: str = field(default_factory=lambda: _optional("WATCHLIST_FILE", ""))
     news_rss_feeds: str = field(default_factory=lambda: _optional("NEWS_RSS_FEEDS", ""))
     news_cache_ttl_s: float = field(default_factory=lambda: float(_optional("NEWS_CACHE_TTL_S", "300")))
-    websocket_enabled: bool = field(default_factory=lambda: _optional("WEBSOCKET_ENABLED", "false").lower() == "true")
+    websocket_enabled: bool = field(default_factory=lambda: _optional("WEBSOCKET_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"})
     websocket_url: str = field(default_factory=lambda: _optional(
         "INDSTOCKS_WEBSOCKET_URL", "wss://ws-prices.indstocks.com/api/v1/ws/prices"
     ))
-    respect_session: bool = field(default_factory=lambda: _optional("RESPECT_SESSION", "true").lower() == "true")
-    log_json: bool = field(default_factory=lambda: _optional("LOG_JSON", "false").lower() == "true")
+    respect_session: bool = field(default_factory=lambda: _optional("RESPECT_SESSION", "true").strip().lower() in {"1", "true", "yes", "on"})
+    log_json: bool = field(default_factory=lambda: _optional("LOG_JSON", "false").strip().lower() in {"1", "true", "yes", "on"})
     health_host: str = field(default_factory=lambda: _optional("HEALTH_HOST", "127.0.0.1"))
     health_port: int = field(default_factory=lambda: int(_optional("HEALTH_PORT", "8080")))
     health_token: str = field(default_factory=lambda: _optional("HEALTH_TOKEN", ""))
@@ -144,7 +144,7 @@ class AppConfig:
         default_factory=lambda: int(_optional("HEARTBEAT_FAILS_BEFORE_FLATTEN", "5"))
     )
     heartbeat_flatten: bool = field(
-        default_factory=lambda: _optional("HEARTBEAT_FLATTEN", "false").lower() == "true"
+        default_factory=lambda: _optional("HEARTBEAT_FLATTEN", "false").strip().lower() in {"1", "true", "yes", "on"}
     )
 
 
@@ -168,6 +168,12 @@ def validate_config(cfg: AppConfig) -> list[str]:
         problems.append(f"JEV_CONFIDENCE_THRESHOLD={r.min_confidence} must be in [0, 1]")
     if r.stop_loss_pct <= 0 or r.target_pct <= 0:
         problems.append("STOP_LOSS_PCT and TARGET_PCT must be > 0")
+    if r.tick_size_inr <= 0:
+        problems.append(f"DEFAULT_TICK_SIZE_INR={r.tick_size_inr} must be > 0")
+    if r.entry_mode not in {"jev", "rule", "jev_and_rule"}:
+        problems.append(
+            f"ENTRY_MODE={r.entry_mode!r} must be jev, rule, or jev_and_rule"
+        )
     if r.last_entry_minutes_before_close < 0:
         problems.append(f"LAST_ENTRY_MINUTES_BEFORE_CLOSE={r.last_entry_minutes_before_close} must be >= 0")
     if r.sweep_interval_min <= 0:

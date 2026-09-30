@@ -112,6 +112,16 @@ class TestComputeAccuracy:
         assert len(report.buy_outcomes) == 0
         assert report.buy_accuracy_pct is None
 
+    def test_detail_price_is_used_when_top_level_is_empty(self):
+        buys = [{
+            "security_id": "13147", "symbol": "PVRINOX", "action": "BUY (paper)",
+            "jev_conviction": 0.9, "jev_confidence": 0.8, "fill_price": None,
+            "detail": {"scored_at_price": 1200.0},
+        }]
+        report = compute_accuracy(buys, [], {"13147": 1260.0}, "2026-09-29")
+        assert len(report.buy_outcomes) == 1
+        assert report.buy_outcomes[0].entry_price == 1200.0
+
     def test_high_conviction_skips_tracked(self):
         skips = [{"security_id": "INFY", "symbol": "INFY", "action": "SKIP",
                   "jev_conviction": 0.75, "jev_confidence": 0.6, "scored_at_price": 1500.0}]

@@ -20,6 +20,23 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _price_from_decision(decision: dict, *keys: str) -> float:
+    """Prices live on the row or under detail. Outcome rows carry fill_price."""
+    detail = decision.get("detail") if isinstance(decision.get("detail"), dict) else {}
+    for key in keys:
+        for source in (decision, detail):
+            raw = source.get(key)
+            if raw in (None, "", 0, 0.0):
+                continue
+            try:
+                price = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if price > 0:
+                return price
+    return 0.0
+
+
 @dataclass
 class PredictionOutcome:
     security_id: str
@@ -124,7 +141,7 @@ def compute_accuracy(
         close = closing_prices.get(sid)
         if close is None:
             continue
-        entry = decision.get("fill_price") or decision.get("scored_at_price", 0)
+        entry = _price_from_decision(decision, "fill_price", "scored_at_price")
         if not entry or entry <= 0:
             continue
         move_pct = ((close - entry) / entry) * 100
@@ -147,7 +164,7 @@ def compute_accuracy(
         close = closing_prices.get(sid)
         if close is None:
             continue
-        scored_price = decision.get("scored_at_price", 0)
+        scored_price = _price_from_decision(decision, "scored_at_price", "fill_price")
         if not scored_price or scored_price <= 0:
             continue
         move_pct = ((close - scored_price) / scored_price) * 100

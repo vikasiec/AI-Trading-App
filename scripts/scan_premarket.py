@@ -29,12 +29,15 @@ def main():
     home = Path.home() / ".indstocks"
     home.mkdir(parents=True, exist_ok=True)
 
-    crossover_signals = compute_200ma_crossovers(
-        lookback_days=5, min_volume_ratio=1.5, require_above_50ma=True,
-    )
+    try:
+        crossover_signals = compute_200ma_crossovers(
+            lookback_days=5, min_volume_ratio=1.5, require_above_50ma=True,
+        )
+        rs_signals = compute_rs_ranking(period_days=63, top_n=50)
+    except Exception:
+        logger.exception("Scanner data failed — leaving the existing watchlist in place")
+        sys.exit(1)
     crossover_symbols = {s.symbol for s in crossover_signals}
-
-    rs_signals = compute_rs_ranking(period_days=63, top_n=50)
     rs_symbols = {s.symbol for s in rs_signals}
     rs_lookup = {s.symbol: s for s in rs_signals}
 
@@ -93,7 +96,7 @@ def _send_combined_alert(
         cfg = load_config()
         notifier = TelegramAlertNotifier(cfg.telegram, kill_switch_callback=lambda: None)
     except Exception:
-        logger.debug("Telegram not configured, skipping alert")
+        logger.warning("Telegram alert was not sent")
         return
 
     sections = []

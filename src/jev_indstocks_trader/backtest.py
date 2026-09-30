@@ -191,7 +191,7 @@ def run_backtest(
 
         if strategy(bars[: i + 1]):
             entry_price = bars[i + 1].open
-            trade_qty = max(1, int(position_capital // entry_price)) if position_capital > 0 else qty
+            trade_qty = int(position_capital // entry_price) if position_capital > 0 else qty
             if trade_qty < 1:
                 continue
             open_position = Position(

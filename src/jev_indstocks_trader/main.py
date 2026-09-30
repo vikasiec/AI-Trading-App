@@ -50,7 +50,7 @@ from .positions import Position, PositionStore
 from .reconciliation import ReconciliationService
 from .retry import retry_with_backoff
 from .risk_governor import RiskGovernor
-from .telegram_alerts import TelegramAlertNotifier
+from .telegram_alerts import HaltState, TelegramAlertNotifier
 from .watchlist import get_watchlist_file_mtime, load_watchlist, try_reload_watchlist_file
 
 logger = logging.getLogger(__name__)
@@ -61,7 +61,7 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     cfg = load_config()
     configure_logging(json_mode=cfg.log_json)
     warnings = validate_config(cfg)
-    blockers = [w for w in warnings if "placeholder" in w.lower()]
+    blockers = [w for w in warnings if not w.startswith("PAPER_TRADING=false")]
     for warning in warnings:
         logger.warning("config: %s", warning)
     if blockers:
@@ -78,32 +78,56 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     instruments = InstrumentsMaster(cfg.indstocks, auth_headers_fn)
     audit = AuditTrail(cfg.audit_log_path)
     position_store = PositionStore(cfg.positions_store_path)
-    def _kill_switch() -> None:
-        """Broker flatten + cancel local GTTs + clear the local store."""
+    halt_state = HaltState()
+
+    def _kill_switch() -> str:
+        """Block new entries, flatten the bot book, keep anything still open."""
+        halt_state.trip()
         flatten_ok = True
+        still_open: set[str] = set()
         if not cfg.risk.paper_trading:
             try:
-                governor.flatten_all()
+                result = governor.flatten_all(
+                    only_security_ids={p.security_id for p in position_store.list_open()}
+                )
+                flatten_ok = result.ok
+                still_open = set(result.still_open)
             except Exception:
                 logger.exception("Kill switch flatten failed — keeping local positions tracked")
                 flatten_ok = False
+                still_open = {p.security_id for p in position_store.list_open()}
         if flatten_ok or cfg.risk.paper_trading:
-            for pos in list(position_store.list_open()):
-                if pos.gtt_id and not cfg.risk.paper_trading:
-                    try:
-                        gtt_orders.cancel_gtt(cfg.indstocks, auth_headers_fn, pos.gtt_id)
-                    except Exception:
-                        logger.exception("Kill switch could not cancel GTT %s", pos.gtt_id)
-                position_store.remove(pos.security_id)
+            to_clear = list(position_store.list_open())
+        else:
+            to_clear = [p for p in position_store.list_open() if p.security_id not in still_open]
+        for pos in to_clear:
+            if pos.gtt_id and not cfg.risk.paper_trading:
+                try:
+                    gtt_orders.cancel_gtt(cfg.indstocks, auth_headers_fn, pos.gtt_id)
+                except Exception:
+                    logger.exception("Kill switch could not cancel GTT %s", pos.gtt_id)
+            try:
+                audit.update_outcome(
+                    pos.decision_id, fill_price=pos.entry_price,
+                    realized_pnl=pos.cumulative_pnl,
+                    net_pnl=pos.cumulative_pnl - pos.cumulative_cost,
+                    exit_reason="kill_switch",
+                )
+            except Exception:
+                logger.exception("Could not write kill-switch outcome for %s", pos.security_id)
+            position_store.remove(pos.security_id)
+        if flatten_ok or cfg.risk.paper_trading:
+            msg = "Halted. Bot positions cleared. No new entries until restart."
+        else:
+            msg = "Halted. Broker flatten incomplete — local positions that are still open were kept."
         try:
-            msg = "Kill switch completed: flatten + local store cleared"
-            if not flatten_ok:
-                msg = "Kill switch INCOMPLETE: broker flatten failed, local positions kept for exit logic"
             notifier.send_critical_alert(msg)
         except Exception:
             logger.exception("Could not send kill-switch confirmation")
+        return msg
 
     notifier = TelegramAlertNotifier(cfg.telegram, kill_switch_callback=_kill_switch)
+    notifier.halt_state = halt_state
     notifier.start_background_polling()
     exit_manager = ExitManager(
         gateway=gateway,
@@ -194,6 +218,24 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
     jev_daily_date = now_ist().date().isoformat()
     sweep_pending: set[str] = set()
     sweep_last_refilled: float = 0.0
+
+    def _build_monitor_state() -> dict:
+        return {
+            "paper_trading": cfg.risk.paper_trading,
+            "halted": halt_state.is_halted(),
+            "positions": position_store.list_open(),
+            "watchlist": list(watchlist),
+            "jev_calls_today": jev_daily_count[0],
+            "jev_cap": cfg.jev.daily_call_cap,
+            "started_at": started_at,
+            "audit_path": str(cfg.audit_log_path),
+            "heartbeat_ok": heartbeat.last_ok,
+            "heartbeat_consecutive_failures": heartbeat.consecutive_failures,
+            "telegram_alive": notifier.poll_alive,
+        }
+
+    notifier.set_state_provider(_build_monitor_state)
+
     try:
         while True:
             if watchlist_file_path is not None and not cfg.watchlist_symbols.strip():
@@ -218,7 +260,10 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
                 elif new_mtime != watchlist_mtime:
                     watchlist_mtime = new_mtime
             if heartbeat.due():
-                heartbeat.ping()
+                try:
+                    heartbeat.ping()
+                except Exception:
+                    logger.exception("Heartbeat ping failed")
             phase = session_phase() if cfg.respect_session else "open"
             today = now_ist().date().isoformat()
             if phase == "closed":
@@ -228,12 +273,22 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
             if phase == "flatten":
                 if flattened_on != today:
                     logger.warning("Session flatten window — closing all open positions")
-                    exit_manager.force_exit_all("session_close")
+                    try:
+                        exit_manager.force_exit_all("session_close")
+                    except Exception:
+                        logger.exception("Session force-exit failed")
                     if not cfg.risk.paper_trading:
-                        try:
-                            governor.flatten_all()
-                        except Exception:
-                            logger.exception("Broker flatten after session close failed")
+                        pending = {
+                            p.security_id for p in position_store.list_open() if p.pending_exit_order_id
+                        }
+                        square_ids = {
+                            p.security_id for p in position_store.list_open() if p.security_id not in pending
+                        }
+                        if square_ids:
+                            try:
+                                governor.flatten_all(only_security_ids=square_ids)
+                            except Exception:
+                                logger.exception("Broker flatten after session close failed")
                     if not position_store.list_open():
                         notifier.send_critical_alert(f"Session flatten completed ({today})")
                         flattened_on = today
@@ -243,15 +298,32 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
                 time.sleep(max(poll_interval_s, 5.0))
                 continue
             if not cfg.risk.paper_trading and reconciler.due():
-                reconciler.reconcile()
-            exit_manager.check_and_exit_all()
+                try:
+                    reconciler.reconcile()
+                except Exception:
+                    logger.exception("Reconciliation failed")
+            if not cfg.risk.paper_trading and not halt_state.is_halted():
+                try:
+                    drawdown = governor.get_drawdown_pct()
+                except Exception:
+                    logger.exception("Drawdown check failed")
+                    drawdown = None
+                if drawdown is not None and drawdown >= cfg.risk.daily_loss_limit_pct:
+                    logger.warning("Daily drawdown limit hit on open P&L — halting")
+                    _kill_switch()
+            try:
+                exit_manager.check_and_exit_all()
+            except Exception:
+                logger.exception("Exit check failed")
             or_book.roll_day(today)
             gap_book.roll_day(today)
+            bar_cache.roll_day(today)
             if today != jev_daily_date:
                 jev_counter.reset_if_new_day(today)
                 jev_daily_count[0] = 0
                 jev_daily_date = today
                 jev_last_called.clear()
+                exit_manager.stopped_out.clear()
             mins_open = minutes_since_open() if cfg.respect_session else None
             forming = mins_open is not None and mins_open < cfg.risk.open_skip_minutes
             mins_to_flatten = minutes_until_flatten() if cfg.respect_session else None
@@ -259,6 +331,7 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
                 mins_to_flatten is not None
                 and mins_to_flatten <= cfg.risk.last_entry_minutes_before_close
             )
+            halted = halt_state.is_halted()
             # Sweep refill: every sweep_interval_min, reload the full watchlist
             # for log-only Jev scoring of rule-gated symbols.
             now_mono = time.monotonic()
@@ -281,14 +354,17 @@ def run_loop(poll_interval_s: float = 1.0) -> None:
                     or_book=or_book,
                     gap_book=gap_book,
                     form_opening_range=forming,
-                    allow_entries=not forming and not closing_soon,
-                    entry_block_reason="forming_or" if forming else "closing_soon" if closing_soon else None,
+                    allow_entries=not forming and not closing_soon and not halted,
+                    entry_block_reason=(
+                        "halted" if halted else "forming_or" if forming else "closing_soon" if closing_soon else None
+                    ),
                     index_day_change_pct=index_chg,
                     jev_last_called=jev_last_called,
                     jev_daily_count=jev_daily_count,
                     jev_counter=jev_counter,
                     kill_switch_fn=_kill_switch,
                     sweep_pending=sweep_pending if cfg.risk.sweep_enabled else None,
+                    stopped_out=exit_manager.stopped_out,
                 )
             except Exception:
                 logger.exception("Tick failed — exits still running, skipping new entries this iteration")
@@ -330,7 +406,8 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
           jev_last_called: dict | None = None, jev_daily_count: list | None = None,
           jev_counter: JevDailyCounter | None = None,
           kill_switch_fn=None,
-          sweep_pending: set | None = None) -> None:
+          sweep_pending: set | None = None,
+          stopped_out: set | None = None) -> None:
     """One iteration: fetch a snapshot per watchlist symbol, score it, and
     (maybe) open a new position. Exit checks run separately, before this,
     in run_loop() -- closing existing risk always happens before opening
@@ -508,6 +585,13 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                         jev_counter.increment(now_ist().date().isoformat())
             continue
 
+        if len(position_store.list_open()) >= cfg.risk.max_concurrent_positions:
+            audit.log_skip(security_id, "max_positions", symbol=symbol)
+            continue
+        if stopped_out is not None and security_id in stopped_out:
+            audit.log_skip(security_id, "stopped_out_today", symbol=symbol)
+            continue
+
         result = ConvictionResult(score=0.0, confidence=0.0, raw={})
         latency_ms = 0.0
         jev_ok = False
@@ -615,7 +699,10 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                     approved = False
                 elif not cfg.risk.paper_trading:
                     try:
-                        order = gateway.place_limit_order(security_id, "BUY", qty, live_ltp)
+                        order = gateway.place_limit_order(
+                            security_id, "BUY", qty, live_ltp,
+                            tick_size=float(instrument.get("tick_size") or cfg.risk.tick_size_inr),
+                        )
                         order_id = extract_order_id(order)
                         if not order_id:
                             logger.error("Place-order response for %s had no order id: %s", symbol, order)
@@ -674,11 +761,28 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                                 action = "SKIP"
                                 reason = "order_fill_unresolved"
                     except Exception:
-                        logger.exception("Order placement failed for %s -- not marking executed", symbol)
+                        logger.exception(
+                            "Order placement failed for %s -- checking the order book before another buy",
+                            symbol,
+                        )
+                        adopted = None
+                        try:
+                            adopted = gateway.find_recent_order_id(security_id, "BUY")
+                        except Exception:
+                            logger.exception("Order book lookup failed after buy error for %s", symbol)
                         approved = False
                         qty = 0
                         action = "SKIP"
-                        reason = "order_placement_failed"
+                        if isinstance(adopted, str) and adopted:
+                            order_id = adopted
+                            governor.mark_executed(security_id)
+                            reason = "order_placement_ambiguous"
+                            notifier.send_critical_alert(
+                                f"BUY for {symbol} failed in an ambiguous way. "
+                                f"Tracking existing order {adopted} and not sending another this minute."
+                            )
+                        else:
+                            reason = "order_placement_failed"
                 else:
                     action = "BUY (paper)"
                     governor.mark_executed(security_id)

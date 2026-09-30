@@ -1,7 +1,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from jev_indstocks_trader.session import minutes_until_flatten, session_phase
+from jev_indstocks_trader.session import minutes_until_flatten, session_phase  # holiday coverage below
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -25,6 +25,12 @@ def test_closed_after_bell_and_weekend():
     assert session_phase(_dt(15, 30)) == "closed"
     assert session_phase(_dt(8, 0)) == "closed"
     assert session_phase(_dt(11, 0, weekday=5)) == "closed"  # Saturday
+
+
+def test_weekday_holiday_is_closed():
+    gandhi = datetime(2026, 10, 2, 10, 30, tzinfo=IST)
+    assert session_phase(gandhi) == "closed"
+    assert minutes_until_flatten(gandhi) is None
 
 
 def test_minutes_until_flatten_midday():

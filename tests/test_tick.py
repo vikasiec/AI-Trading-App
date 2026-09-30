@@ -33,6 +33,7 @@ def _setup(tmp_path, mocker, paper=True, quotes=None):
     gateway.place_limit_order.return_value = {"data": {"order_id": "OID1"}}
     gateway.wait_for_fill.return_value = FillResult(status="FILLED", filled_qty=10, avg_price=None, raw={})
     gateway.auth_headers_fn = lambda: {}
+    gateway.find_recent_order_id.return_value = None
 
     governor = mocker.Mock()
     governor.validate_trade.return_value = (True, "approved")
@@ -105,6 +106,48 @@ def test_tick_live_order_failure_does_not_mark_executed_or_store(tmp_path, mocke
 
     governor.mark_executed.assert_not_called()
     assert store.list_open() == []
+
+
+def test_full_book_does_not_call_jev(tmp_path, mocker):
+    from jev_indstocks_trader.positions import Position
+    cfg, gateway, governor, evaluator, instruments, audit, notifier, store, cache = _setup(
+        tmp_path, mocker, paper=True
+    )
+    cfg = replace(cfg, risk=replace(cfg.risk, max_concurrent_positions=1))
+    store.add(Position(
+        security_id="1", scrip_code="NSE_1", exchange="NSE", segment="EQUITY",
+        product="INTRADAY", qty=1, entry_price=100.0, stop_loss_price=99.0,
+        target_price=102.0, opened_at=1.0, decision_id="d1",
+    ))
+    _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
+          store, ["RELIANCE"], None, cache)
+    evaluator.evaluate_signal.assert_not_called()
+    audit.log_skip.assert_any_call("2885", "max_positions", symbol="RELIANCE")
+
+
+def test_stopped_out_name_does_not_call_jev(tmp_path, mocker):
+    cfg, gateway, governor, evaluator, instruments, audit, notifier, store, cache = _setup(
+        tmp_path, mocker, paper=True
+    )
+    _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
+          store, ["RELIANCE"], None, cache, stopped_out={"2885"})
+    evaluator.evaluate_signal.assert_not_called()
+    audit.log_skip.assert_any_call("2885", "stopped_out_today", symbol="RELIANCE")
+
+
+def test_tick_ambiguous_buy_adopts_order_and_does_not_store(tmp_path, mocker):
+    cfg, gateway, governor, evaluator, instruments, audit, notifier, store, cache = _setup(
+        tmp_path, mocker, paper=False
+    )
+    gateway.place_limit_order.side_effect = RuntimeError("read timeout")
+    gateway.find_recent_order_id.return_value = "BUY-7"
+
+    _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
+          store, ["RELIANCE"], None, cache)
+
+    governor.mark_executed.assert_called_once_with("2885")
+    assert store.list_open() == []
+    assert audit.log_decision.call_args.kwargs["reason"] == "order_placement_ambiguous"
 
 
 def test_tick_live_success_marks_and_stores(tmp_path, mocker):

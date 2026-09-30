@@ -56,9 +56,10 @@ class INDstocksAuth:
 
     def _write_cache(self, token: str) -> None:
         tmp_path = self.cfg.token_cache_path.with_suffix(".tmp")
-        with open(tmp_path, "w") as f:
+        self.cfg.token_cache_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump({"token": token, "issued_at": time.time()}, f)
-        os.chmod(tmp_path, 0o600)
         tmp_path.replace(self.cfg.token_cache_path)  # atomic on POSIX
 
 

@@ -52,34 +52,39 @@ def compute_rs_ranking(period_days: int = 63, top_n: int = 50) -> list[RSSignal]
         data = yf.download(nse_tickers, period="1y", interval="1d", progress=False, threads=True)
     except Exception:
         logger.exception("yfinance download failed")
-        return []
+        raise
 
     close = data["Close"] if "Close" in data.columns.get_level_values(0) else data.get("Close")
     if close is None or close.empty:
         logger.error("No price data returned")
-        return []
+        raise RuntimeError("yfinance returned no price data")
 
     if "^NSEI" not in close.columns:
         logger.error("Nifty 50 index data not available")
-        return []
+        raise RuntimeError("Nifty 50 index data not available")
 
     nifty = close["^NSEI"].dropna()
-    if len(nifty) < period_days + 1:
+    lookback = period_days + 1
+    if len(nifty) < lookback:
         logger.error("Not enough Nifty 50 data for %d-day lookback", period_days)
-        return []
-
-    index_return = (nifty.iloc[-1] - nifty.iloc[-period_days]) / nifty.iloc[-period_days]
+        raise RuntimeError("not enough Nifty data")
 
     signals: list[RSSignal] = []
+    missing = 0
     for symbol in NIFTY_200:
         ticker = f"{symbol}.NS"
         if ticker not in close.columns:
+            missing += 1
             continue
         series = close[ticker].dropna()
-        if len(series) < period_days + 1:
+        shared = series.to_frame("stock")
+        shared["nifty"] = nifty.reindex(shared.index)
+        shared = shared.dropna()
+        if len(shared) < lookback:
             continue
 
-        stock_return = (series.iloc[-1] - series.iloc[-period_days]) / series.iloc[-period_days]
+        stock_return = (shared["stock"].iloc[-1] - shared["stock"].iloc[-lookback]) / shared["stock"].iloc[-lookback]
+        index_return = (shared["nifty"].iloc[-1] - shared["nifty"].iloc[-lookback]) / shared["nifty"].iloc[-lookback]
 
         if stock_return != stock_return:
             continue
@@ -93,6 +98,8 @@ def compute_rs_ranking(period_days: int = 63, top_n: int = 50) -> list[RSSignal]
             rs_ratio=rs_ratio,
         ))
 
+    if missing:
+        logger.info("%d pool symbols had no price data", missing)
     signals.sort(key=lambda s: s.rs_ratio, reverse=True)
     return signals[:top_n]
 
@@ -107,7 +114,7 @@ def _send_telegram_alert(signals: list[RSSignal], top_n: int, period_days: int) 
         cfg = load_config()
         notifier = TelegramAlertNotifier(cfg.telegram, kill_switch_callback=lambda: None)
     except Exception:
-        logger.debug("Telegram not configured, skipping alert")
+        logger.warning("Telegram alert was not sent")
         return
 
     if not signals:

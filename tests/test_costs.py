@@ -20,6 +20,14 @@ def test_brokerage_is_two_flat_orders():
     assert cost.brokerage == 10.0  # one order in, one order out
 
 
+def test_later_slice_charges_one_brokerage_order():
+    rates = CostRates(brokerage_per_order=5.0)
+    cost = compute_round_trip_cost(
+        buy_price=100, sell_price=110, qty=4, rates=rates, brokerage_orders=1,
+    )
+    assert cost.brokerage == 5.0
+
+
 def test_gst_applies_to_brokerage_exchange_and_sebi_only():
     cost = compute_round_trip_cost(buy_price=100, sell_price=110, qty=100)
     expected_gst = (cost.brokerage + cost.exchange_txn + cost.sebi_turnover) * 0.18

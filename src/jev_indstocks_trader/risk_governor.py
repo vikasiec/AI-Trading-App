@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
 import requests
@@ -23,6 +24,19 @@ import requests
 from .config import INDstocksConfig, RiskConfig
 
 logger = logging.getLogger(__name__)
+
+_CANCEL_STATUSES = frozenset({
+    "O-PENDING", "OPEN", "PENDING", "TRIGGER_PENDING",
+    "PARTIALLY FILLED", "PARTIAL", "PARTIALLY_FILLED", "PF",
+})
+# Delivery holdings are not this bot's intraday book.
+_DELIVERY_PRODUCTS = frozenset({"CNC", "DELIVERY", "MTF", "NRML"})
+
+
+@dataclass(frozen=True)
+class FlattenResult:
+    ok: bool
+    still_open: tuple[str, ...]
 
 
 def round_to_tick(price: float, tick_size: float) -> float:
@@ -62,7 +76,6 @@ class RiskGovernor:
             )
             resp.raise_for_status()
             keys: set[str] = set()
-            now = time.time()
             for order in resp.json().get("data") or []:
                 sid = order.get("security_id") or order.get("name")
                 if not sid:
@@ -73,7 +86,8 @@ class RiskGovernor:
                         ts = ts / 1000.0
                     keys.add(self.window_key(str(sid), float(ts)))
                 else:
-                    keys.add(self.window_key(str(sid), now))
+                    # No timestamp: do not pretend the order was placed this minute.
+                    continue
             logger.info("Idempotency state rebuilt: %d prior orders loaded", len(keys))
             self._order_book_loaded = True
             return keys
@@ -92,10 +106,12 @@ class RiskGovernor:
             logger.warning("Could not fetch /funds for drawdown check — treating as unreadable")
             return None
         d = resp.json()["data"]
+        # Start-of-day balance stays put when capital is deployed. Available
+        # balance shrinks and would inflate the loss percentage.
         equity = (
-            d.get("available_balance")
+            d.get("sod_balance")
             or d.get("net_balance")
-            or d.get("sod_balance")
+            or d.get("available_balance")
             or 0.0
         )
         if equity <= 0:
@@ -164,24 +180,45 @@ class RiskGovernor:
 
     # -- kill switch ----------------------------------------------------------
 
-    def flatten_all(self) -> None:
-        """Cancel every open order, then square off every open position.
-        Both steps run even if one fails partway -- log and continue.
+    def flatten_all(self, only_security_ids: set[str] | None = None) -> FlattenResult:
+        """Cancel working orders and square broker positions for this bot.
+
+        Delivery products (CNC and the like) are never sold. When
+        `only_security_ids` is set, only those ids are touched, so a manual
+        holding the bot does not track is left alone. One failed request does
+        not skip the rest. `ok` is false when a targeted position is still
+        open or the positions read itself failed.
         """
         headers = self.auth_headers_fn()
         logger.critical("KILL SWITCH TRIGGERED -- flattening all orders and positions")
+        wanted = {str(s) for s in only_security_ids} if only_security_ids is not None else None
+
+        def _tracked(security_id: object) -> bool:
+            if wanted is None:
+                return True
+            return str(security_id) in wanted
 
         try:
             book = requests.get(f"{self.cfg.base_url}/order-book", headers=headers, timeout=10)
             book.raise_for_status()
-            for order in book.json().get("data", []):
-                if order.get("status") not in ("O-PENDING", "OPEN", "PENDING", "TRIGGER_PENDING"):
-                    continue
-                oid = order.get("id") or order.get("order_id")
-                if not oid:
-                    continue
-                segment = order.get("segment", "EQUITY")
-                body_segment = "DERIVATIVE" if str(segment).upper() in ("FNO", "DERIVATIVE", "NFO") else "EQUITY"
+            orders = book.json().get("data", []) or []
+        except requests.RequestException:
+            logger.exception("Error reading the order book during kill switch")
+            orders = []
+
+        for order in orders:
+            status = str(order.get("status", "")).upper()
+            if status not in _CANCEL_STATUSES:
+                continue
+            sid = order.get("security_id")
+            if not _tracked(sid):
+                continue
+            oid = order.get("id") or order.get("order_id")
+            if not oid:
+                continue
+            segment = order.get("segment", "EQUITY")
+            body_segment = "DERIVATIVE" if str(segment).upper() in ("FNO", "DERIVATIVE", "NFO") else "EQUITY"
+            try:
                 resp = requests.post(
                     f"{self.cfg.base_url}/order/cancel",
                     headers=headers,
@@ -190,17 +227,30 @@ class RiskGovernor:
                 )
                 if resp.status_code >= 400:
                     logger.error("Kill-switch cancel failed for order %s: %s", oid, resp.text)
-        except requests.RequestException:
-            logger.exception("Error cancelling open orders during kill switch")
+            except requests.RequestException:
+                logger.exception("Kill-switch cancel failed for order %s", oid)
 
         try:
             pos_resp = requests.get(f"{self.cfg.base_url}/positions", headers=headers, timeout=10)
             pos_resp.raise_for_status()
-            for pos in pos_resp.json().get("data", []):
-                net_qty = pos.get("net_qty", 0)
-                if net_qty == 0:
-                    continue
-                side = "SELL" if net_qty > 0 else "BUY"
+            positions = pos_resp.json().get("data", []) or []
+        except requests.RequestException:
+            logger.exception("Error reading positions during kill switch")
+            still = tuple(sorted(wanted)) if wanted is not None else ()
+            return FlattenResult(ok=False, still_open=still)
+
+        for pos in positions:
+            sid = str(pos.get("security_id", ""))
+            net_qty = pos.get("net_qty", 0) or 0
+            if net_qty == 0 or not sid:
+                continue
+            product = str(pos.get("product", "")).upper()
+            if product in _DELIVERY_PRODUCTS:
+                continue
+            if not _tracked(sid):
+                continue
+            side = "SELL" if net_qty > 0 else "BUY"
+            try:
                 resp = requests.post(
                     f"{self.cfg.base_url}/order",
                     headers=headers,
@@ -208,8 +258,8 @@ class RiskGovernor:
                         "txn_type": side,
                         "exchange": pos["exchange"],
                         "segment": pos["segment"],
-                        "security_id": pos["security_id"],
-                        "qty": abs(net_qty),
+                        "security_id": sid,
+                        "qty": abs(int(net_qty)),
                         "order_type": "MARKET",
                         "product": pos["product"],
                         "validity": "DAY",
@@ -219,26 +269,35 @@ class RiskGovernor:
                     timeout=10,
                 )
                 if resp.status_code >= 400:
-                    logger.error(
-                        "Kill-switch flatten failed for %s: %s",
-                        pos.get("security_id"), resp.text,
-                    )
-            # Acceptance is not flat — re-read positions briefly and shout leftovers.
-            leftover = []
+                    logger.error("Kill-switch flatten failed for %s: %s", sid, resp.text)
+            except requests.RequestException:
+                logger.exception("Kill-switch flatten failed for %s", sid)
+
+        leftover: list[dict] = []
+        try:
             deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline:
                 check = requests.get(f"{self.cfg.base_url}/positions", headers=headers, timeout=10)
                 check.raise_for_status()
-                leftover = [
-                    p for p in check.json().get("data", []) if p.get("net_qty", 0) != 0
-                ]
+                leftover = []
+                for p in check.json().get("data", []) or []:
+                    if not p.get("net_qty"):
+                        continue
+                    if str(p.get("product", "")).upper() in _DELIVERY_PRODUCTS:
+                        continue
+                    if not _tracked(p.get("security_id")):
+                        continue
+                    leftover.append(p)
                 if not leftover:
                     break
                 time.sleep(0.4)
-            if leftover:
-                logger.critical(
-                    "KILL SWITCH incomplete — still open at broker: %s",
-                    [(p.get("security_id"), p.get("net_qty")) for p in leftover],
-                )
         except requests.RequestException:
-            logger.exception("Error squaring off positions during kill switch")
+            logger.exception("Could not re-read positions after kill switch")
+            still = tuple(sorted(wanted)) if wanted is not None else ()
+            return FlattenResult(ok=False, still_open=still)
+
+        still_ids = tuple(sorted({str(p.get("security_id")) for p in leftover}))
+        if still_ids:
+            logger.critical("KILL SWITCH incomplete — still open at broker: %s", still_ids)
+            return FlattenResult(ok=False, still_open=still_ids)
+        return FlattenResult(ok=True, still_open=())

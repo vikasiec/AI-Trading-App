@@ -72,8 +72,15 @@ def _fetch_closing_prices(
         else:
             continue
         day_data = series.dropna()
-        if not day_data.empty:
-            prices[sid] = float(day_data.iloc[0])
+        target = datetime.fromisoformat(target_date).date()
+        chosen = None
+        for ts, val in day_data.items():
+            ts_date = ts.date() if hasattr(ts, "date") else None
+            if ts_date == target:
+                chosen = float(val)
+                break
+        if chosen is not None:
+            prices[sid] = chosen
 
     return prices
 

@@ -88,13 +88,13 @@ def compute_200ma_crossovers(
         data = yf.download(nse_tickers, period="1y", interval="1d", progress=False, threads=True)
     except Exception:
         logger.exception("yfinance download failed")
-        return []
+        raise
 
     close = data["Close"] if "Close" in data.columns.get_level_values(0) else data.get("Close")
     volume = data["Volume"] if "Volume" in data.columns.get_level_values(0) else data.get("Volume")
     if close is None or close.empty:
         logger.error("No price data returned")
-        return []
+        raise RuntimeError("yfinance returned no price data")
 
     crossovers: list[CrossoverSignal] = []
     for symbol in NIFTY_200:
@@ -167,7 +167,7 @@ def _send_telegram_alert(signals: list[CrossoverSignal], filters_desc: str) -> N
         cfg = load_config()
         notifier = TelegramAlertNotifier(cfg.telegram, kill_switch_callback=lambda: None)
     except Exception:
-        logger.debug("Telegram not configured, skipping alert")
+        logger.warning("Telegram alert was not sent")
         return
 
     if not signals:

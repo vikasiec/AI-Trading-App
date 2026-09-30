@@ -79,11 +79,11 @@ def audit_stats_since(since: datetime) -> dict:
         if ts < since:
             continue
         action = rec.get("action", "")
-        if action == "ENTRY":
+        if str(action).startswith("BUY"):
             entries += 1
         elif action == "SKIP":
             skips += 1
-            reason = rec.get("reason", "unknown")
+            reason = rec.get("skip_reason") or rec.get("reason") or "unknown"
             skip_reasons[reason] += 1
         if rec.get("jev_conviction") is not None:
             jev_calls += 1
@@ -106,7 +106,11 @@ def open_positions() -> list[dict]:
         data = json.loads(POSITIONS_PATH.read_text())
         if isinstance(data, list):
             return data
-        return data.get("positions", [])
+        if isinstance(data, dict) and isinstance(data.get("positions"), list):
+            return data["positions"]
+        if isinstance(data, dict):
+            return [v for v in data.values() if isinstance(v, dict) and v.get("security_id")]
+        return []
     except Exception:
         return []
 

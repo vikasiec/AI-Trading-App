@@ -78,6 +78,8 @@ def test_paper_mode_exit_updates_audit_and_clears_position(tmp_path, mocker):
     store.add(make_position())
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2500.0  # hits target
     audit = mocker.Mock()
 
@@ -96,6 +98,8 @@ def test_live_mode_exit_places_sell_order(tmp_path, mocker):
     store.add(make_position())
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2420.0  # hits stop loss
     _mock_successful_order_and_fill(gateway)
     audit = mocker.Mock()
@@ -120,6 +124,8 @@ def test_live_mode_target_exit_places_limit_order(tmp_path, mocker):
     store.add(make_position())
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2500.0  # hits target
     _mock_successful_order_and_fill(gateway)
     audit = mocker.Mock()
@@ -139,6 +145,8 @@ def test_failed_exit_order_keeps_position_open(tmp_path, mocker):
     store.add(make_position())
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2420.0
     gateway.place_market_order.side_effect = RuntimeError("network error")
     audit = mocker.Mock()
@@ -160,6 +168,8 @@ def test_gtt_cancelled_on_live_exit(tmp_path, mocker):
     store.add(make_position(decision_id="2885_1", gtt_id="GTT999"))
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2420.0  # hits stop loss
     _mock_successful_order_and_fill(gateway)
     audit = mocker.Mock()
@@ -180,6 +190,8 @@ def test_no_gtt_cancel_when_position_has_no_gtt_id(tmp_path, mocker):
     store.add(make_position())  # no gtt_id -- defaults to None
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2420.0
     _mock_successful_order_and_fill(gateway)
     audit = mocker.Mock()
@@ -199,6 +211,8 @@ def test_no_gtt_cancel_in_paper_mode(tmp_path, mocker):
     store.add(make_position(decision_id="2885_1", gtt_id="GTT999"))
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2500.0  # hits target
     audit = mocker.Mock()
     cancel_mock = mocker.patch("jev_indstocks_trader.exits.gtt_orders.cancel_gtt")
@@ -218,6 +232,8 @@ def test_rejected_exit_fill_keeps_position_open(tmp_path, mocker):
     store.add(make_position())
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2420.0  # hits stop loss
     gateway.place_market_order.return_value = {"data": {"order_id": "OID1"}}
     gateway.wait_for_fill.return_value = FillResult(
@@ -242,6 +258,8 @@ def test_partial_exit_fill_keeps_remainder(tmp_path, mocker):
     store.add(make_position(qty=10))
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2420.0
     gateway.place_market_order.return_value = {"data": {"order_id": "OID1"}}
     gateway.wait_for_fill.return_value = FillResult(
@@ -270,6 +288,8 @@ def test_ambiguous_exit_fill_keeps_position_open(tmp_path, mocker):
     store.add(make_position())
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2420.0  # hits stop loss
     gateway.place_market_order.return_value = {"data": {"order_id": "OID1"}}
     gateway.wait_for_fill.return_value = FillResult(status="TIMEOUT", filled_qty=0, avg_price=None, raw=None)
@@ -293,6 +313,8 @@ def test_exit_uses_confirmed_avg_price_not_requested_ltp(tmp_path, mocker):
     store.add(make_position())
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2420.0  # triggers stop-loss check, but isn't the real fill price
     gateway.place_market_order.return_value = {"data": {"order_id": "OID1"}}
     gateway.wait_for_fill.return_value = FillResult(
@@ -316,6 +338,8 @@ def test_paper_mode_never_calls_wait_for_fill(tmp_path, mocker):
     store.add(make_position())
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2500.0  # hits target
     audit = mocker.Mock()
 
@@ -356,6 +380,8 @@ def test_partial_then_full_close_sums_cumulative_pnl(tmp_path, mocker):
     store.add(pos)
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 90.0
     gateway.place_market_order.return_value = {"data": {"order_id": "OID1"}}
     gateway.wait_for_fill.return_value = FillResult(
@@ -396,6 +422,8 @@ def test_session_close_uses_market_order(tmp_path, mocker):
     store.add(make_position())
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2460.0
     _mock_successful_order_and_fill(gateway)
     audit = mocker.Mock()
@@ -416,6 +444,8 @@ def test_status_check_error_keeps_pending_id_and_skips(tmp_path, mocker):
     store.add(pos)
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2420.0  # hits stop loss
     gateway.get_order_status.side_effect = RuntimeError("broker 503")
     audit = mocker.Mock()
@@ -438,6 +468,8 @@ def test_pending_exit_complete_with_fill_books_close(tmp_path, mocker):
     store.add(pos)
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2420.0
     gateway.get_order_status.return_value = {
         "order_id": "OID_DONE", "status": "COMPLETE", "filled_qty": 10, "avg_price": 2418.0,
@@ -460,6 +492,8 @@ def test_timeout_partial_then_complete_books_only_the_new_shares(tmp_path, mocke
     store.add(make_position(qty=10, entry_price=2450.0))
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2420.0
     gateway.place_market_order.return_value = {"data": {"order_id": "OID1"}}
     gateway.wait_for_fill.return_value = FillResult(
@@ -505,6 +539,8 @@ def test_complete_with_no_new_shares_clears_pending_without_rebooking(tmp_path, 
         pending_exit_booked_qty=6, cumulative_pnl=booked, cumulative_cost=12.0,
     ))
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2420.0
     gateway.get_order_status.return_value = {
         "order_id": "OID1", "status": "COMPLETE", "filled_qty": 6, "avg_price": 2410.0,
@@ -532,6 +568,8 @@ def test_pending_exit_complete_without_fill_alerts_no_double_sell(tmp_path, mock
     store.add(pos)
 
     gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
     gateway.get_ltp.return_value = 2420.0
     gateway.get_order_status.return_value = {
         "order_id": "OID_WEIRD", "status": "COMPLETE",
@@ -548,3 +586,106 @@ def test_pending_exit_complete_without_fill_alerts_no_double_sell(tmp_path, mock
     gateway.place_market_order.assert_not_called()
     assert len(store.list_open()) == 1
     notifier.send_critical_alert.assert_called_once()
+
+
+def test_broker_flat_clears_local_without_a_sell(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position())
+    gateway = mocker.Mock()
+    gateway.net_qty.return_value = 0
+    gateway.get_ltp.return_value = 2420.0
+    audit = mocker.Mock()
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=False,
+    )
+    manager.check_and_exit_all()
+    gateway.place_market_order.assert_not_called()
+    assert store.list_open() == []
+    assert audit.update_outcome.call_args.kwargs["exit_reason"] == "broker_flat"
+
+
+def test_unreadable_broker_qty_does_not_sell(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position())
+    gateway = mocker.Mock()
+    gateway.net_qty.return_value = None
+    gateway.get_ltp.return_value = 2420.0
+    audit = mocker.Mock()
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=False,
+    )
+    manager.check_and_exit_all()
+    gateway.place_market_order.assert_not_called()
+    assert len(store.list_open()) == 1
+    audit.update_outcome.assert_not_called()
+
+
+def test_smaller_broker_qty_sells_only_that_many(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position(qty=10))
+    gateway = mocker.Mock()
+    gateway.net_qty.return_value = 4
+    gateway.get_ltp.return_value = 2420.0
+    gateway.find_recent_order_id.return_value = None
+    _mock_successful_order_and_fill(gateway, avg_price=2420.0)
+    gateway.wait_for_fill.return_value = FillResult(
+        status="FILLED", filled_qty=4, avg_price=2420.0, raw={"status": "COMPLETE"}
+    )
+    audit = mocker.Mock()
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=False,
+    )
+    manager.check_and_exit_all()
+    assert gateway.place_market_order.call_args.kwargs["qty"] == 4
+
+
+def test_stop_cancels_resting_limit_then_sends_market(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position(pending_exit_order_id="RESTING"))
+    gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.find_recent_order_id.return_value = None
+    gateway.get_ltp.return_value = 2420.0
+    gateway.get_order_status.return_value = {"status": "OPEN", "filled_qty": 0}
+    _mock_successful_order_and_fill(gateway, avg_price=2420.0)
+    audit = mocker.Mock()
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=False,
+    )
+    manager.check_and_exit_all()
+    gateway.cancel_order.assert_called_once_with("RESTING")
+    gateway.place_market_order.assert_called_once()
+    gateway.place_limit_order.assert_not_called()
+
+
+def test_ambiguous_exit_adopts_existing_sell(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position())
+    gateway = mocker.Mock()
+    gateway.net_qty.return_value = 10
+    gateway.get_ltp.return_value = 2420.0
+    gateway.place_market_order.side_effect = RuntimeError("timeout")
+    gateway.find_recent_order_id.return_value = "SELL-9"
+    audit = mocker.Mock()
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=False,
+    )
+    manager.check_and_exit_all()
+    kept = store.get("2885")
+    assert kept is not None
+    assert kept.pending_exit_order_id == "SELL-9"
+    audit.update_outcome.assert_not_called()
+
+
+def test_missing_ltp_on_force_exit_keeps_position(tmp_path, mocker):
+    store = PositionStore(tmp_path / "positions.json")
+    store.add(make_position())
+    gateway = mocker.Mock()
+    gateway.get_ltp.return_value = None
+    audit = mocker.Mock()
+    manager = ExitManager(
+        gateway=gateway, store=store, audit=audit, max_hold_minutes=375, paper_trading=True,
+    )
+    manager.force_exit_all("session_close")
+    assert len(store.list_open()) == 1
+    audit.update_outcome.assert_not_called()

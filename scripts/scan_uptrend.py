@@ -181,7 +181,7 @@ def screen(
         if len(aligned) < rs_period_days + 1:
             funnel["insufficient_data"] += 1
             continue
-        stock_return = (price_series.iloc[-1] - price_series.iloc[-rs_period_days]) / price_series.iloc[-rs_period_days]
+        stock_return = (price_series.iloc[-1] - price_series.iloc[-(rs_period_days + 1)]) / price_series.iloc[-(rs_period_days + 1)]
         if stock_return != stock_return:
             funnel["insufficient_data"] += 1
             continue
@@ -189,7 +189,9 @@ def screen(
         if len(nifty_aligned) < rs_period_days + 1:
             funnel["insufficient_data"] += 1
             continue
-        index_return = (nifty_aligned.iloc[-1] - nifty_aligned.iloc[-rs_period_days]) / nifty_aligned.iloc[-rs_period_days]
+        index_return = (
+            nifty_aligned.iloc[-1] - nifty_aligned.iloc[-(rs_period_days + 1)]
+        ) / nifty_aligned.iloc[-(rs_period_days + 1)]
         rs_ratio = (1 + stock_return) / (1 + index_return) if (1 + index_return) != 0 else 0.0
 
         funnel["passed"] += 1

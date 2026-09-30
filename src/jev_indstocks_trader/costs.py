@@ -54,6 +54,7 @@ def compute_round_trip_cost(
     qty: int,
     product: str = "INTRADAY",
     rates: CostRates = CostRates(),
+    brokerage_orders: int = 2,
 ) -> RoundTripCost:
     """Cost of one BUY + one SELL of `qty` shares. `product` is "INTRADAY"
     or "CNC" (delivery) -- STT and stamp duty differ between the two.
@@ -62,7 +63,8 @@ def compute_round_trip_cost(
     sell_value = sell_price * qty
     turnover = buy_value + sell_value
 
-    brokerage = rates.brokerage_per_order * 2  # one order to enter, one to exit
+    orders = max(0, int(brokerage_orders))
+    brokerage = rates.brokerage_per_order * orders
 
     if product == "CNC":
         stt = (buy_value + sell_value) * rates.stt_delivery_pct

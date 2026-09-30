@@ -8,4 +8,4 @@ Three-tier architecture:
 See docs/ARCHITECTURE.md for the full design doc.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.19.0"
