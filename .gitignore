@@ -15,6 +15,7 @@ instruments_master.csv
 *.pem
 data/daily/
 data/index/
+data/minute/
 grok-ssh-access.md
 grok-vm-reference.md
 grok-vm-live-review.md

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import time as dt_time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -644,6 +645,19 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
 
         gate_ok, gate_reason = combine_votes(mode, jev_ok, vote)
         if not gate_ok:
+            s_vwap = bar_cache.session_vwap(symbol) if bar_cache is not None else None
+            h_or_low = bar_cache.or_low(symbol) if bar_cache is not None else None
+            above_vwap = (
+                (scored_at_price > s_vwap)
+                if s_vwap is not None
+                else None
+            )
+            t_now = now_ist()
+            t_time = t_now.time()
+            in_window = (
+                (dt_time(9, 25) <= t_time < dt_time(10, 21))
+                or (dt_time(13, 15) <= t_time < dt_time(14, 31))
+            )
             audit.log_decision(
                 security_id=security_id,
                 jev_conviction=result.score,
@@ -655,7 +669,18 @@ def _tick(cfg, gateway, governor, evaluator, instruments, audit, notifier,
                 had_news=(len(headlines) > 0) if news_source is not None else None,
                 reason=gate_reason,
                 symbol=symbol,
-                detail={"entry_mode": mode, "scored_at_price": scored_at_price, "paper": cfg.risk.paper_trading},
+                detail={
+                    "entry_mode": mode,
+                    "scored_at_price": scored_at_price,
+                    "paper": cfg.risk.paper_trading,
+                    "rule": vote.reason,
+                    "noise_score": result.noise_score,
+                    "session_vwap": s_vwap,
+                    "above_vwap": above_vwap,
+                    "or_low": h_or_low,
+                    "in_window": in_window,
+                    "in_play": None,
+                },
             )
             continue
 
