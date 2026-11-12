@@ -278,6 +278,22 @@ backtest. Built so far off that backlog:
   momentum rule on synthetic data looked marginally profitable gross but
   was **net negative after real costs** — exactly the failure mode this
   engine exists to catch before it costs real money.
+- **`timemachine.py`** (`scripts/run_timemachine.py`) — replays one planned
+  intraday long before it is placed. From an entry, stop, target and entry
+  time it runs 10,000 simulated rest-of-sessions, drawing each 5-minute bar
+  from the symbol's own bars at the same time of day over its last full
+  sessions, and reports how often the target came before the stop, the
+  average R, and the average rupee result **net of the same cost engine**
+  the live loop uses. Next to it sits a no-signal baseline: the same
+  percentage stop and target entered at the same clock time on each of those
+  real sessions. A bar that touches both stop and target counts as the stop.
+  Replays end at 15:15 by default, the loop's own flatten time. **Offline
+  analysis only:** nothing in the trading loop imports it (a test enforces
+  that), it places no orders and changes no sizing or exit rule. It is a
+  simulation from recent bars, not a prediction. `--fetch` pulls 60 days of
+  5-minute bars from Yahoo's unofficial chart endpoint into `data/minute/`;
+  any CSV in `load_from_csv()`'s format works. The replay algorithm is
+  adapted from the MIT-licensed day-trader-skill.
 
 ### 7. Wiring and operations
 
@@ -387,6 +403,17 @@ needed before real capital; P2 is production hardening once P0/P1 are done.
 ---
 
 ## Changelog
+
+### 2026-11-13
+- **Time Machine** (`timemachine.py`, `scripts/run_timemachine.py`): Monte
+  Carlo replay of a planned intraday long from the symbol's own 5-minute
+  bars, with a no-signal time-of-day baseline and rupee results net of
+  `costs.compute_round_trip_cost`. Offline only: not imported by the trading
+  loop, no change to entries, sizing, exits or order flow. No new
+  dependencies.
+- 71 new tests (plan validation, IST session handling, replay determinism
+  and the stop-first rule, baseline, verdict thresholds, CLI exit codes,
+  Yahoo fetch failure modes). Full suite: 421 passing.
 
 ### 2026-09-26 (v16)
 - Broker heartbeat on GET `/user/profile`. Paper alerts only. Live flatten

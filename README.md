@@ -47,10 +47,12 @@ src/jev_indstocks_trader/
   calibration.py          analyzes audit_trail.jsonl: does Jev's score predict outcomes?
   historical_data.py       OHLCV bar loading (CSV always works; INDstocks fetch is a placeholder)
   backtest.py               event-driven backtest engine, reuses live exit/cost logic
+  timemachine.py            replays a planned intraday long 10,000 times from its own 5-min bars (offline only)
   main.py                wires it all together, the trading loop entrypoint
 scripts/
   refresh_token.py      cron entrypoint -- the ONE process allowed to refresh the token
   run_calibration_report.py  CLI: prints the Jev calibration report
+  run_timemachine.py    CLI: target-vs-stop odds for a planned trade, net of costs; places nothing
 tests/                   pytest suite (86 tests) covering risk governor, portfolio risk, costs, auth, exits, GTT, reconciliation, watchlist, retry, news/ticks, calibration, historical data, backtesting, Telegram auth/polling, and main._tick collar/idempotency paths
 docs/ARCHITECTURE.md     full design doc + Mermaid architecture diagram
 docs/INTELLIGENCE_ROADMAP.md  data / hypotheses / algorithms backlog for the trading intelligence itself
